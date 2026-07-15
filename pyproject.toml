@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bella-bot"
 version = "0.1.0"
@@ -9,11 +13,21 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.scripts]
+bella = "bella.app:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",
     "mypy>=1.11",
 ]
+
+# Only `bella` is an installable package. Without this, setuptools' flat-
+# layout auto-discovery sees `content/` sitting next to it at repo root and
+# refuses to build ("Multiple top-level packages discovered") — which the
+# Dockerfile's `pip install .` needs to work.
+[tool.setuptools.packages.find]
+include = ["bella*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

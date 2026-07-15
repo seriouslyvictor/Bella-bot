@@ -1,14 +1,20 @@
 import logging
 import secrets
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from bella.config import Settings
 from bella.evolution import EvolutionSender, WhatsAppSender, parse_webhook
 from bella.pipeline import Pipeline
 
 logger = logging.getLogger("bella")
+
+# Repo root / whatsapp_profile_picture.png, resolved from this file so it
+# doesn't depend on the process's working directory.
+PROFILE_PICTURE_PATH = Path(__file__).resolve().parent.parent / "whatsapp_profile_picture.png"
 
 
 def create_app(settings: Settings, sender: WhatsAppSender | None = None) -> FastAPI:
@@ -24,6 +30,14 @@ def create_app(settings: Settings, sender: WhatsAppSender | None = None) -> Fast
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/assets/whatsapp-profile-picture.png")
+    async def profile_picture() -> FileResponse:
+        # Evolution GO's set-profile-picture call fetches this URL with a
+        # plain HTTP GET (no header support), so it cannot carry the webhook
+        # secret. Safe to leave open: internal-network-only, and the only
+        # thing served is this one non-sensitive marketing asset.
+        return FileResponse(PROFILE_PICTURE_PATH, media_type="image/png")
 
     @app.post("/webhook/{secret}")
     async def webhook(

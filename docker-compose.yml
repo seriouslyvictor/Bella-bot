@@ -1,0 +1,36 @@
+# Reference compose file — for a local sanity check of the image and the
+# network wiring before trusting Coolify with it. Not required for the
+# Coolify deploy itself if you use Coolify's "Dockerfile" resource type
+# (see docs/deploy.md); use this instead if you pick Coolify's "Docker
+# Compose" resource type. Either way the only thing that has to be right is
+# the network below.
+services:
+  bella:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - EVOLUTION_URL=${EVOLUTION_URL:-http://evolution-go:8080}
+      - BELLA_INTERNAL_URL=${BELLA_INTERNAL_URL:-http://bella:8000}
+      - BELLA_DISPLAY_NAME=${BELLA_DISPLAY_NAME:-Bella}
+    networks:
+      evolution-shared:
+        aliases:
+          - bella
+    # No `ports:` — Bella is internal-only (see docs/deploy.md). Evolution
+    # GO reaches her by service name on evolution-shared; nothing needs to
+    # reach her from outside the VPS.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # <<< REPLACE with the Evolution GO compose stack's actual network name —
+  # see docs/deploy.md, "Step 1: find the Evolution network name". This repo
+  # has no way to discover it without VPS access.
+  evolution-shared:
+    name: REPLACE_WITH_EVOLUTION_STACK_NETWORK_NAME
+    external: true
