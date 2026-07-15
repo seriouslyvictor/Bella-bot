@@ -115,6 +115,28 @@ declares no `env_file` of its own.
 | `BELLA_INTERNAL_URL` | `http://bella:8000` | The alias declared in `docker-compose.yml`. Required. **Never** Bella's container name — that changes every redeploy |
 | `BELLA_DISPLAY_NAME` | e.g. `Bella` | What `set_presentation.py` sets as the WhatsApp display name |
 | `ANTHROPIC_API_KEY` | Claude API key | Required by the Scope Gate from ticket 04 onward; store as a masked secret |
+| `BELLA_DATABASE_URL` | `postgresql://postgres:<POSTGRES_PASSWORD>@postgres:5432/bella` | Bella's isolated runtime database; the app refuses any database name other than `bella` |
+| `POSTGRES_ADMIN_URL` | `postgresql://postgres:<POSTGRES_PASSWORD>@postgres:5432/postgres` | Needed only for the one-time database provisioning command below; remove it afterward |
+
+Use the Postgres credentials from the Evolution stack without copying them
+into this repository. Before deploying, confirm the real Postgres network
+alias with the `docker inspect` command in Step 1; replace `postgres` in both
+URLs if the observed alias differs.
+
+### Provision Bella's isolated database
+
+After the first image build, open a terminal in Bella's container and run:
+
+```bash
+python -m bella.scripts.provision_database
+```
+
+The command connects only to Postgres's `postgres` maintenance database,
+creates a database named `bella` if needed, and is safe to rerun. It refuses
+an admin URL aimed at an Evolution database. Once it succeeds, remove
+`POSTGRES_ADMIN_URL` from Bella's environment and redeploy; runtime needs only
+`BELLA_DATABASE_URL`. On startup Bella creates her tables inside `bella` and
+will refuse to start if the runtime URL names any other database.
 
 ### Which Evolution GO credential
 

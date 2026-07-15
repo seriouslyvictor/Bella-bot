@@ -36,6 +36,7 @@ class Settings:
     # arrive. Never a public address.
     bella_internal_url: str
     anthropic_api_key: str = ""
+    database_url: str = ""
     bella_display_name: str = "Bella"
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH
     canned_replies_path: Path = DEFAULT_CANNED_REPLIES_PATH
@@ -51,6 +52,7 @@ class Settings:
             webhook_secret=os.environ["WEBHOOK_SECRET"],
             bella_internal_url=os.environ["BELLA_INTERNAL_URL"],
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+            database_url=os.environ["BELLA_DATABASE_URL"],
             bella_display_name=os.environ.get("BELLA_DISPLAY_NAME", "Bella"),
             profile_picture_path=_path_from_env(
                 "PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH

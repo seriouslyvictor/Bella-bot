@@ -1,5 +1,8 @@
+import asyncio
 import logging
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -17,7 +20,25 @@ def create_app(settings: Settings, pipeline: Pipeline) -> FastAPI:
 
     Construction lives in bella.composition — see its docstring for why.
     """
-    app = FastAPI(title="Bella", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await pipeline.start()
+        retention_task = asyncio.create_task(pipeline.run_retention())
+        try:
+            yield
+        finally:
+            retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retention_task
+            await pipeline.close()
+
+    app = FastAPI(
+        title="Bella",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

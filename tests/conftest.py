@@ -1,4 +1,5 @@
 import functools
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 from bella.app import create_app
 from bella.canned_replies import CannedReplies
 from bella.config import Settings
+from bella.conversation_store import ConversationMessage, InMemoryConversationStore
 from bella.course_content import CourseContent
 from bella.pipeline import Pipeline
 from bella.scope_gate import RouteCategory
@@ -48,11 +50,18 @@ class FakeScopeGate:
 class FakeAnswerer:
     def __init__(self, response: str | None = None, *, fail: bool = False) -> None:
         self.seen: list[tuple[str, RouteCategory]] = []
+        self.histories: list[list[ConversationMessage]] = []
         self.response = response
         self.fail = fail
 
-    async def answer(self, text: str, category: RouteCategory) -> str:
+    async def answer(
+        self,
+        text: str,
+        category: RouteCategory,
+        history: Sequence[ConversationMessage],
+    ) -> str:
         self.seen.append((text, category))
+        self.histories.append(list(history))
         if self.fail:
             raise RuntimeError("simulated answering failure")
         return self.response or f"placeholder answer: {text}"
@@ -89,6 +98,7 @@ def make_test_client(
     *,
     scope_gate: FakeScopeGate | None = None,
     answerer: FakeAnswerer | None = None,
+    conversation_store: InMemoryConversationStore | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     pipeline = Pipeline(
@@ -97,6 +107,7 @@ def make_test_client(
         answerer or FakeAnswerer(),
         canned_replies(),
         course_content().enrollment_url,
+        conversation_store or InMemoryConversationStore(),
     )
     app = create_app(make_settings(), pipeline)
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)

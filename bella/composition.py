@@ -12,6 +12,7 @@ from bella.anthropic_answerer import AnthropicAnswerer
 from bella.anthropic_gate import AnthropicScopeGate
 from bella.canned_replies import CannedReplies
 from bella.config import Settings
+from bella.conversation_store import PostgresConversationStore
 from bella.course_content import CourseContent
 from bella.evolution import EvolutionSender
 from bella.pipeline import Pipeline
@@ -36,4 +37,8 @@ def build_pipeline(settings: Settings) -> Pipeline:
         AnthropicAnswerer(client, content),
         CannedReplies.from_yaml(settings.canned_replies_path),
         content.enrollment_url,
+        PostgresConversationStore(
+            settings.database_url,
+            required_database_name="bella",
+        ),
     )

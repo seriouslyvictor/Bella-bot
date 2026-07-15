@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from bella.config import Settings
-from bella.scripts import register_webhook, set_presentation
+from bella.scripts import provision_database, register_webhook, set_presentation
 from bella.scripts._client import post
 
 
@@ -142,3 +142,10 @@ def test_post_still_raises_on_other_http_errors() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         post(make_settings(), "/instance/connect", {}, client=_mock_client(handler))
+
+
+def test_database_provisioning_refuses_an_evolution_database_url() -> None:
+    with pytest.raises(ValueError, match="maintenance database"):
+        provision_database.require_maintenance_database(
+            "postgresql://postgres:secret@postgres:5432/evolution"
+        )

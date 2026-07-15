@@ -19,9 +19,9 @@ async def verify() -> None:
     answerer = AnthropicAnswerer(client, content)
     question = "Em uma frase, qual é a duração do curso?"
 
-    await answerer.answer(question, RouteCategory.COURSE_QUESTION)
+    await answerer.answer(question, RouteCategory.COURSE_QUESTION, [])
     first = answerer.last_cache_read_tokens
-    await answerer.answer(question, RouteCategory.COURSE_QUESTION)
+    await answerer.answer(question, RouteCategory.COURSE_QUESTION, [])
     second = answerer.last_cache_read_tokens
 
     print(f"First call cache read tokens: {first}")
@@ -37,4 +37,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

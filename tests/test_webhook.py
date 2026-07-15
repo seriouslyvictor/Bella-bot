@@ -7,6 +7,7 @@ assertions observe only the fake sender and HTTP responses.
 from fastapi.testclient import TestClient
 
 from bella.scope_gate import RouteCategory
+from bella.conversation_store import InMemoryConversationStore
 from tests.conftest import (
     TEST_SECRET,
     FakeAnswerer,
@@ -55,6 +56,44 @@ def test_course_question_gets_answering_result(sender: FakeSender) -> None:
             "5511999999999",
             "Você vai aprender a transformar ideias em automações, assistentes e aplicações com IA generativa.",
         )
+    ]
+
+
+def test_follow_up_receives_prior_context_after_service_restart(
+    sender: FakeSender,
+) -> None:
+    store = InMemoryConversationStore()
+    first_answerer = FakeAnswerer(response="O curso oferece bolsa integral.")
+    first_service = make_test_client(
+        sender,
+        answerer=first_answerer,
+        conversation_store=store,
+    )
+    first_service.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "O curso tem bolsa?", message_id="BEFORE-RESTART"
+        ),
+    )
+
+    follow_up_answerer = FakeAnswerer(response="Sim, a bolsa é integral.")
+    restarted_service = make_test_client(
+        sender,
+        answerer=follow_up_answerer,
+        conversation_store=store,
+    )
+    restarted_service.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "E quanto custa?", message_id="AFTER-RESTART"
+        ),
+    )
+
+    assert [
+        (message.role, message.text) for message in follow_up_answerer.histories[0]
+    ] == [
+        ("user", "O curso tem bolsa?"),
+        ("assistant", "O curso oferece bolsa integral."),
     ]
 
 
@@ -278,6 +317,21 @@ def test_duplicate_delivery_gets_one_reply(
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert len(sender.sent) == 1
+
+
+def test_duplicate_delivery_gets_one_reply_after_service_restart(
+    sender: FakeSender,
+) -> None:
+    store = InMemoryConversationStore()
+    payload = make_webhook_payload("oi", message_id="PERSISTED-DUPLICATE")
+
+    first_service = make_test_client(sender, conversation_store=store)
+    first_service.post(WEBHOOK, json=payload)
+
+    restarted_service = make_test_client(sender, conversation_store=store)
+    restarted_service.post(WEBHOOK, json=payload)
+
     assert len(sender.sent) == 1
 
 

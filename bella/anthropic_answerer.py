@@ -1,10 +1,12 @@
 """Claude Opus answers grounded in Bella's public course content."""
 
 import logging
+from collections.abc import Sequence
 
 from anthropic import AsyncAnthropic
-from anthropic.types import TextBlockParam
+from anthropic.types import MessageParam, TextBlockParam
 
+from bella.conversation_store import ConversationMessage
 from bella.course_content import CourseContent
 from bella.scope_gate import RouteCategory
 
@@ -54,20 +56,29 @@ class AnthropicAnswerer:
         ]
         self.last_cache_read_tokens = 0
 
-    async def answer(self, text: str, category: RouteCategory) -> str:
+    async def answer(
+        self,
+        text: str,
+        category: RouteCategory,
+        history: Sequence[ConversationMessage],
+    ) -> str:
+        messages: list[MessageParam] = [
+            {"role": message.role, "content": message.text} for message in history
+        ]
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Scope Gate category: {category.value}\n"
+                    f"<user_message>\n{text}\n</user_message>"
+                ),
+            }
+        )
         response = await self._client.with_options(timeout=TIMEOUT).messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=self._system,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Scope Gate category: {category.value}\n"
-                        f"<user_message>\n{text}\n</user_message>"
-                    ),
-                }
-            ],
+            messages=messages,
         )
         self.last_cache_read_tokens = response.usage.cache_read_input_tokens or 0
         logger.info(
