@@ -28,6 +28,7 @@ def make_settings() -> Settings:
         evolution_api_key="unused-in-tests",
         evolution_instance_id="unused-in-tests",
         webhook_secret=TEST_SECRET,
+        bella_internal_url="http://bella:8000",
     )
 
 

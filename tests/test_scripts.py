@@ -15,12 +15,18 @@ from bella.scripts import register_webhook, set_presentation
 
 
 class RecordingPost:
+    """Stands in for bella.scripts._client.post, echoing back the shape
+    Evolution GO really returns (it reflects webhookUrl straight back)."""
+
     def __init__(self) -> None:
         self.calls: list[tuple[Settings, str, dict[str, Any]]] = []
 
     def __call__(self, settings: Settings, path: str, json: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((settings, path, json))
-        return {"message": "success"}
+        echoed = {"eventString": "MESSAGE", "jid": "5511999999999@s.whatsapp.net"}
+        if "webhookUrl" in json:
+            echoed["webhookUrl"] = json["webhookUrl"]
+        return {"message": "success", "data": echoed}
 
 
 def make_settings() -> Settings:
@@ -48,6 +54,33 @@ def test_register_webhook_puts_secret_in_the_path_not_the_body(
     assert path == "/instance/connect"
     assert body["webhookUrl"] == "http://bella:8000/webhook/s3cr3t"
     assert "s3cr3t" not in str({k: v for k, v in body.items() if k != "webhookUrl"})
+
+
+def test_register_webhook_never_prints_the_secret(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The operator runs this from a Coolify terminal; stdout outlives it.
+    monkeypatch.setattr(register_webhook, "post", RecordingPost())
+    monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: make_settings()))
+
+    register_webhook.main()
+
+    assert "s3cr3t" not in capsys.readouterr().out
+
+
+def test_register_webhook_fails_loudly_when_evolution_disagrees(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def wrong_url(settings: Settings, path: str, json: dict[str, Any]) -> dict[str, Any]:
+        return {"data": {"webhookUrl": "http://somewhere-else:8000/webhook/other"}}
+
+    monkeypatch.setattr(register_webhook, "post", wrong_url)
+    monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: make_settings()))
+
+    with pytest.raises(SystemExit):
+        register_webhook.main()
+
+    assert "MISMATCH" in capsys.readouterr().out
 
 
 def test_set_presentation_sets_picture_then_name(monkeypatch: pytest.MonkeyPatch) -> None:

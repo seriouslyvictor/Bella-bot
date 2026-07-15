@@ -2,24 +2,23 @@
 # network wiring before trusting Coolify with it. Not required for the
 # Coolify deploy itself if you use Coolify's "Dockerfile" resource type
 # (see docs/deploy.md); use this instead if you pick Coolify's "Docker
-# Compose" resource type. Either way the only thing that has to be right is
-# the network below.
+# Compose" resource type.
 services:
   bella:
     build: .
+    # EVOLUTION_URL and BELLA_INTERNAL_URL are required and deliberately have
+    # no default — under Coolify the reachable names are the fully-qualified
+    # `<service>-<stack-uuid>` forms, so any short-name default here would be
+    # wrong exactly where it matters. See docs/deploy.md.
     env_file:
       - .env
-    environment:
-      - EVOLUTION_URL=${EVOLUTION_URL:-http://evolution-go:8080}
-      - BELLA_INTERNAL_URL=${BELLA_INTERNAL_URL:-http://bella:8000}
-      - BELLA_DISPLAY_NAME=${BELLA_DISPLAY_NAME:-Bella}
     networks:
-      evolution-shared:
+      evolution:
         aliases:
           - bella
-    # No `ports:` — Bella is internal-only (see docs/deploy.md). Evolution
-    # GO reaches her by service name on evolution-shared; nothing needs to
-    # reach her from outside the VPS.
+    # No `ports:` — Bella is internal-only (see docs/deploy.md). Evolution GO
+    # reaches her by name on the shared network; nothing needs to reach her
+    # from outside the VPS.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -28,9 +27,10 @@ services:
       start_period: 10s
 
 networks:
-  # <<< REPLACE with the Evolution GO compose stack's actual network name —
-  # see docs/deploy.md, "Step 1: find the Evolution network name". This repo
-  # has no way to discover it without VPS access.
-  evolution-shared:
-    name: REPLACE_WITH_EVOLUTION_STACK_NETWORK_NAME
+  # The Evolution GO stack's existing network, as observed on the VPS.
+  # NOTE: the short `bella` alias above works under plain compose but NOT
+  # under the Coolify deploy this repo actually targets — Coolify's "Connect
+  # to Predefined Networks" breaks short-name DNS.
+  evolution:
+    name: ohilulk0h2zy70nhcc536np4
     external: true

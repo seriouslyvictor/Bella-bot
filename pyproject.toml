@@ -13,9 +13,6 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
-[project.scripts]
-bella = "bella.app:main"
-
 [dependency-groups]
 dev = [
     "pytest>=8",

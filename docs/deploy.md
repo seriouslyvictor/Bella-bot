@@ -2,6 +2,8 @@
 
 This is the owner's runbook — an agent prepared everything below but has no
 VPS or Coolify access and cannot run any of it. Follow the steps in order.
+Steps 4, 6 and 7 depend on values you read off the VPS in earlier steps, so
+the ordering is load-bearing, not stylistic.
 
 ## Architecture decision: separate Coolify app + shared network
 
@@ -13,41 +15,52 @@ shared Docker network.
 **This runbook uses the shared-network approach.** Reasons:
 
 - Editing the live Evolution stack's compose file to add a service risks
-  disrupting the already-connected WhatsApp number, and there's no way to
-  dry-run or roll that back without VPS access to inspect the stack first.
+  disrupting the already-connected WhatsApp number.
 - Bella's release cadence (a bot under active development, tickets 04–09
   still to come) is decoupled from Evolution GO's — she can redeploy, crash,
   or roll back without touching the messaging infra.
-- Coolify supports attaching a resource to an existing Docker network
-  independently of how that resource was deployed.
 
-The cost: one extra piece of Coolify config (the network attachment below)
-that has to be set correctly and re-verified after major Coolify upgrades.
+The cost is real and shows up throughout this runbook: Coolify's "Connect to
+Predefined Networks" option, which this approach depends on, **breaks
+short-name Docker DNS**. Per Coolify's own docs, it renames stacks to
+`<service>-<uuid>` to prevent collisions, and you must address them by that
+fully-qualified name. So `evolution-go` is *not* a reliable hostname here
+even though the alias exists; `evolution-go-ohilulk0h2zy70nhcc536np4` is.
+This is why `EVOLUTION_URL` and `BELLA_INTERNAL_URL` are **required env vars
+with no defaults** in `bella/config.py` — a default that's wrong in the only
+environment that runs it is worse than no default.
 
 ## Step 0: what you're setting up
 
 - A new Coolify application, built from this repo's `Dockerfile`, with no
   public domain and no published ports (spec: Bella is internal-only).
-- That application joins the same Docker network the Evolution GO stack
-  (and its Postgres) already runs on, so she can reach both by service name.
+- That application joins the Evolution GO stack's existing Docker network,
+  **`ohilulk0h2zy70nhcc536np4`**. Evolution GO and Postgres are both on it,
+  so one attachment covers both.
 - Two scripts, run once from inside the deployed container, that register
   Bella's webhook with Evolution GO and set her WhatsApp profile picture and
   display name.
 
-## Step 1: find the Evolution network name
+## Step 1: the network (already confirmed)
 
-SSH into the VPS and identify the Docker network the Evolution GO stack's
-containers are on:
+Both services live on network **`ohilulk0h2zy70nhcc536np4`** — confirmed on
+the VPS, no discovery needed.
+
+`docker inspect` on the evolution-go container reports IP `10.0.2.3` and DNS
+names `evolution-go-ohilulk0h2zy70nhcc536np4`, `evolution-go`. Use the long
+form (see the DNS caveat above).
+
+Postgres is confirmed to be on the same network. Its hostname is **inferred**
+to be `postgres-ohilulk0h2zy70nhcc536np4:5432` from Coolify's
+`<service>-<uuid>` rule — unlike the evolution-go name, that has *not* been
+read off a real `docker inspect`. Nothing in this ticket connects to
+Postgres, so the inference costs nothing now; when you wire it up in ticket
+06, confirm the real hostname first:
 
 ```bash
-docker ps --format '{{.Names}}'          # find the evolution-go / postgres container names
-docker inspect <evolution-go-container> --format '{{json .NetworkSettings.Networks}}'
+docker ps --format '{{.Names}}' | grep -i postgres
+docker inspect <postgres-container> --format '{{json .NetworkSettings.Networks}}'
 ```
-
-The key(s) in that JSON output are the network name(s). If there's more than
-one, pick the one Postgres is also on (`docker inspect <postgres-container>`
-should show the same name). Write it down — every `REPLACE_WITH_EVOLUTION_STACK_NETWORK_NAME`
-placeholder in this repo (`docker-compose.yml`) means this value.
 
 ## Step 2: create the Coolify application
 
@@ -56,90 +69,116 @@ placeholder in this repo (`docker-compose.yml`) means this value.
 2. Build pack: **Dockerfile** (the repo's `Dockerfile` at root).
 3. **No domain.** Do not set an FQDN and do not expose a port — leave
    Coolify's port mapping empty. Bella is only ever reached by other
-   containers on the internal network, never from outside the VPS (spec:
-   "Bella is internal-only — no public domain").
+   containers on the internal network, never from outside the VPS.
 
 ## Step 3: attach the shared network
 
-Coolify normally puts each application on its own isolated network. You
-need Bella on the Evolution network you found in Step 1, too.
+Enable **Connect to Predefined Network** on the application and set it to
+`ohilulk0h2zy70nhcc536np4`.
 
-- If your Coolify version has a **"Connect to Predefined Network"** field
-  under the application's Advanced/General settings, put the network name
-  from Step 1 there.
-- If you don't see that option (Coolify's UI has moved this around across
-  versions), the durable fallback is `docker network connect
-  <network-from-step-1> <bella-container-name>` after each deploy — check
-  whether Coolify exposes a post-deployment hook to automate this, since a
-  manual `docker network connect` does not survive a redeploy (Coolify
-  recreates the container).
+If your Coolify version doesn't surface that option, the fallback is
+`docker network connect ohilulk0h2zy70nhcc536np4 <bella-container>` after
+each deploy — but note it does **not** survive a redeploy (Coolify recreates
+the container), so check whether Coolify exposes a post-deployment hook to
+automate it.
 
-Verify it worked after deploying (Step 5):
+## Step 4: environment variables (first pass)
 
-```bash
-docker exec <bella-container> python -c "import socket; print(socket.gethostbyname('evolution-go')); print(socket.gethostbyname('postgres'))"
-```
+Set these in Coolify's environment variables panel (mark them
+"secret"/masked if your version offers it). Never put real values in this
+repo. `.env.example` lists the same names as a copy-paste template.
 
-Both must resolve. If either fails, the network attachment didn't take —
-recheck the network name and the attachment step before moving on.
+`BELLA_INTERNAL_URL` is deliberately **not** finalized yet — you can't know
+its value until the container exists. Step 6 fills it in.
 
-## Step 4: environment variables
-
-Set these in Coolify's environment variables panel for the Bella
-application (mark them "secret"/masked if your Coolify version offers that).
-Never put real values in this repo.
-
-| Variable | Value comes from | Notes |
+| Variable | Value | Notes |
 |---|---|---|
 | `EVOLUTION_API_KEY` | Owner's existing local `.env` | The Evolution GO instance token — same value already used for the walking skeleton |
 | `EVOLUTION_INSTANCE_ID` | Owner's existing local `.env` | — |
 | `WEBHOOK_SECRET` | Generate fresh: `python -c "import secrets; print(secrets.token_urlsafe(32))"` | Lives in the webhook URL path (`/webhook/<secret>`), not a header — see `bella/app.py` |
-| `EVOLUTION_URL` | Usually leave unset | Defaults to `http://evolution-go:8080`; only set it if the Evolution stack's service is named differently — check with `docker inspect` from Step 1 |
-| `BELLA_INTERNAL_URL` | Depends on Coolify's container naming | Defaults to `http://bella:8000`. After first deploy, check what hostname Bella's container actually resolves to on the shared network (`docker inspect <bella-container> --format '{{json .NetworkSettings.Networks}}'` from another container on that network, or set a custom container name/network alias to `bella` in Coolify if it offers one, so the default just works) |
-| `BELLA_DISPLAY_NAME` | Your choice | What `bella/scripts/set_presentation.py` sets as the WhatsApp display name, e.g. `Bella` |
+| `EVOLUTION_URL` | `http://evolution-go-ohilulk0h2zy70nhcc536np4:8080` | **Set this explicitly.** The short `evolution-go` alias exists but isn't reliable under Coolify's predefined-network mode. Required — the app won't boot without it |
+| `BELLA_DISPLAY_NAME` | e.g. `Bella` | What `set_presentation.py` sets as the WhatsApp display name |
+| `BELLA_INTERNAL_URL` | *(Step 6)* | Required — the app won't boot without it |
 
-`.env.example` at the repo root lists these same names as a copy-paste
-template (no values).
+To get the app to boot for Step 5, set `BELLA_INTERNAL_URL` to a placeholder
+(`http://placeholder:8000`) for now. Nothing reads it until Step 7, and Step
+6 replaces it with the real value.
 
-## Step 5: health check and restart policy
+## Step 5: health check, restart policy, and first deploy
 
-In Coolify's application settings, set the HTTP health check to `GET
-/health` on port 8000 (internal — no public port needed for Coolify to reach
-it, it talks to the container directly). Set the restart policy to restart
-on failure. The image also ships a container-level `HEALTHCHECK` (see
-`Dockerfile`) as a second, redundant signal for `docker inspect`.
+Set the HTTP health check to `GET /health` on port 8000 (internal — Coolify
+talks to the container directly, no public port needed). Set the restart
+policy to restart on failure. The image also ships a container-level
+`HEALTHCHECK` (see `Dockerfile`) as a redundant signal for `docker inspect`.
 
-## Step 6: deploy
+Deploy. Confirm the app comes up healthy in Coolify's dashboard.
 
-Trigger the deploy. Once it's up, re-run the Step 3 verification
-(`docker exec ... socket.gethostbyname(...)`) and confirm `GET /health`
-returns `{"status": "ok"}`.
+## Step 6: read Bella's real hostname and set `BELLA_INTERNAL_URL`
+
+This is the highest-risk value in the whole deploy. Evolution GO posts
+webhooks to it; if it's wrong, **nothing errors** — Bella just never
+receives anything, on a live WhatsApp number.
+
+Get Bella's actual container name:
+
+```bash
+docker ps --format '{{.Names}}' | grep -i bella
+```
+
+By Coolify's naming rule it'll be `bella-<some-uuid>` — her own uuid, *not*
+the Evolution stack's, and *not* the bare `bella`. Confirm what she answers
+to on the shared network:
+
+```bash
+docker inspect <bella-container> --format '{{json .NetworkSettings.Networks}}'
+```
+
+Then set `BELLA_INTERNAL_URL` to `http://<that-name>:8000` in Coolify's env
+panel (replacing the Step 4 placeholder) and redeploy.
+
+Now verify the links that actually matter, in both directions:
+
+```bash
+# Bella -> Evolution GO
+docker exec <bella-container> python -c "import socket; print(socket.gethostbyname('evolution-go-ohilulk0h2zy70nhcc536np4'))"
+
+# Bella -> Postgres (acceptance criterion 2; use the real hostname per Step 1)
+docker exec <bella-container> python -c "import socket; print(socket.gethostbyname('postgres-ohilulk0h2zy70nhcc536np4'))"
+
+# Evolution GO -> Bella. This is the one that silently breaks; check it
+# BEFORE touching the WhatsApp number.
+docker exec <evolution-go-container> wget -qO- http://<bella-container>:8000/health
+```
+
+That last command must print `{"status":"ok"}`. If it doesn't, stop and fix
+the networking — Step 7 will appear to succeed regardless, and you'll be
+debugging silence on a live number instead.
 
 ## Step 7: register the webhook
 
-From Coolify's terminal/exec-into-container feature (or `docker exec -it
-<bella-container> sh`), run:
+From Coolify's terminal (or `docker exec -it <bella-container> sh`):
 
 ```bash
 python -m bella.scripts.register_webhook
 ```
 
 This calls Evolution GO's `POST /instance/connect` with `webhookUrl` set to
-`<BELLA_INTERNAL_URL>/webhook/<WEBHOOK_SECRET>`. **This is safe to run
-against the already-connected, already-paired instance** — it does not
-re-pair or log out the live WhatsApp session. That's not obvious from
-Evolution GO's hosted docs, which describe `/instance/connect` only as the
-initial pairing call; it was confirmed by reading the actual source
-(`pkg/instance/service/instance_service.go`, function `Connect`): when a
-client is already running for the instance, it just updates the stored
-webhook URL/event subscriptions and syncs them onto the live session — it
-only starts a fresh client (which is what triggers QR/pairing) when nothing
-was running yet. Re-run this script any time `WEBHOOK_SECRET` or
-`BELLA_INTERNAL_URL` changes.
+`<BELLA_INTERNAL_URL>/webhook/<WEBHOOK_SECRET>`. **Safe against the
+already-connected, already-paired instance** — it does not re-pair or log
+out the live session. That's not obvious from Evolution GO's hosted docs,
+which describe `/instance/connect` only as the initial pairing call; it was
+confirmed by reading the source (`pkg/instance/service/instance_service.go`,
+`Connect`): when a client is already running, it only updates the stored
+webhook URL/subscriptions and syncs them onto the live session, and starts a
+fresh client (the QR/pairing path) only when nothing was running yet.
 
-The script prints Evolution GO's response, including the `webhookUrl` and
-`eventString` it now has on file — confirm `webhookUrl` matches what you
-expect before moving on.
+The script checks Evolution GO's echoed `webhookUrl` against what it sent
+and prints a pass/fail — it deliberately does **not** print the URL itself,
+since the secret is in the path and this output lands in your terminal
+scrollback. Expect `OK: Evolution GO has the expected webhook URL on file.`
+A `MISMATCH` line exits non-zero.
+
+Re-run this any time `WEBHOOK_SECRET` or `BELLA_INTERNAL_URL` changes.
 
 ## Step 8: set the WhatsApp presentation
 
@@ -147,43 +186,52 @@ expect before moving on.
 python -m bella.scripts.set_presentation
 ```
 
-This sets the profile picture (Evolution GO fetches it itself, over HTTP,
-from `<BELLA_INTERNAL_URL>/assets/whatsapp-profile-picture.png` — a route
-`bella/app.py` serves unauthenticated on purpose, since Evolution GO's fetch
-call can't carry the webhook secret or any header) and the display name
-(`BELLA_DISPLAY_NAME`).
+Sets the profile picture — Evolution GO fetches it itself, over plain HTTP,
+from `<BELLA_INTERNAL_URL>/assets/whatsapp-profile-picture.png`, a route
+`bella/app.py` serves unauthenticated on purpose because Evolution GO's
+fetch can't carry a header — and the display name from `BELLA_DISPLAY_NAME`.
+Depends on Step 6's Evolution-GO-can-reach-Bella check having passed.
 
 ## Step 9: verify every acceptance criterion
 
 1. **A text DM to Bella's real number gets the skeleton reply, served from
-   the VPS.** From any phone, message the connected WhatsApp number. Expect
-   the ticket-02 skeleton echo reply within a few seconds.
+   the VPS.** Message the connected number from any phone; expect the
+   ticket-02 echo reply within a few seconds.
 2. **The container reaches Postgres and Evolution GO over the internal
-   network; no new published ports for Postgres.** Re-run the Step 3
-   verification. Separately confirm in Coolify (or `docker port
-   <postgres-container>`) that Postgres still has no port published to the
-   host/internet — this deploy must not have added one.
-3. **Health endpoint reports healthy; Coolify restarts on failure.** Check
-   Coolify's dashboard shows the app healthy. To actually exercise the
-   restart policy, you can temporarily break the health check path in
-   Coolify's config, watch it flip unhealthy, then restore it — optional,
-   but the only way to be sure the restart policy is really wired up rather
-   than just configured.
+   network; no new published ports for Postgres.** Reachability is covered
+   by Step 6's two `gethostbyname` checks. The no-published-port half is a
+   separate question — being on the shared network says nothing about
+   whether a host port got exposed — so confirm explicitly: `docker port
+   <postgres-container>` should print nothing.
+3. **Health endpoint reports healthy; Coolify restarts on failure.** Coolify
+   shows the app healthy. To actually exercise the restart policy rather
+   than just trust it's configured, temporarily point the health check at a
+   bogus path, watch it flip unhealthy and restart, then restore it.
 4. **Bella's WhatsApp profile shows the picture and display name.** Open a
-   chat with Bella's number on a phone and check her contact info.
-5. **No secret appears in the repo or image.** True by construction — the
+   chat with her number on a phone and check the contact info.
+5. **No secret appears in the repo or image.** True by construction: the
    Dockerfile never `COPY`s `.env` (it's `.dockerignore`d), and every secret
-   above is read from the environment at runtime via `bella/config.py`'s
-   `Settings.from_env()`. If you want to double check the built image
-   directly: `docker run --rm <image> env | grep -iE 'key|secret|token'`
-   should print nothing (the variables only exist because Coolify injects
-   them into the running container, not the image).
+   is read from the environment at runtime via `Settings.from_env()`. To
+   check the image directly: `docker run --rm <image> env | grep -iE
+   'key|secret|token'` should print nothing — the variables exist only
+   because Coolify injects them into the running container.
+
+## Known unverified assumptions
+
+- **Postgres's hostname** — the network is confirmed, but
+  `postgres-ohilulk0h2zy70nhcc536np4` is inferred from Coolify's naming rule
+  rather than observed. Costs nothing here (nothing connects to Postgres in
+  this ticket); ticket 06 must use the name it actually observes.
+- **Bella's container name** (Step 6) — depends on the uuid Coolify assigns
+  her app, which doesn't exist until you create it.
+- **Coolify's exact UI labels** for the predefined-network option and the
+  health check, which have moved between Coolify versions.
 
 ## What's deliberately not here
 
-- No Postgres schema or connection string wiring — that's ticket 06. This
+- No Postgres schema or connection-string wiring — that's ticket 06. This
   ticket only needs the network path to exist.
-- No content-mounting story for `content/*.yaml` beyond baking it into the
-  image at build time. If editing the Enrollment Card without a rebuild
-  becomes a real workflow need, revisit with a volume mount — out of scope
-  here since no code reads those files yet.
+- No volume-mount story for `content/*.yaml`; it's baked into the image at
+  build time. Revisit if editing the Enrollment Card without a rebuild
+  becomes a real need — out of scope here, since no code reads those files
+  yet.

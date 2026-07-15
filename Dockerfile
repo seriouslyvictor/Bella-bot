@@ -20,6 +20,11 @@ RUN pip install --no-cache-dir .
 COPY content ./content
 COPY whatsapp_profile_picture.png ./
 
+# Pin the asset location rather than letting bella/config.py infer it from
+# __file__ — the inferred path only happens to be right when the app is run
+# as `python -m bella.app` from this WORKDIR.
+ENV PROFILE_PICTURE_PATH=/app/whatsapp_profile_picture.png
+
 # Runs as an unprivileged user; the process never needs root.
 RUN useradd --create-home --uid 1000 bella && chown -R bella:bella /app
 USER bella
