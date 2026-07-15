@@ -104,9 +104,9 @@ documentos da empresa; cruzar pedidos, estoques e planilhas automaticamente.
 
 O curso tem uma apostila própria, aula por aula ("do prompt à solução"), com um
 capítulo por sábado. Cada capítulo tem duas partes: compreensão guiada e
-prática/consolidação. A versão final em PDF está sendo finalizada e será
-disponibilizada em breve — a Bella pode enviá-la pelo próprio WhatsApp quando
-estiver pronta.
+prática/consolidação. É só pedir a apostila para a Bella: se o PDF já estiver
+disponível, ela envia pelo próprio WhatsApp; se ainda estiver em finalização,
+ela avisa e responde dúvidas sobre o conteúdo enquanto isso.
 
 ## Sobre a Bella (este chatbot)
 

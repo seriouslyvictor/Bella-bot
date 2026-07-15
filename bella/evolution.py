@@ -47,10 +47,7 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
     if not isinstance(message_id, str) or not isinstance(chat_jid, str):
         return None
 
-    message = data.get("Message")
-    text = message.get("conversation") if isinstance(message, dict) else None
-    if not isinstance(text, str) or not text.strip():
-        text = None
+    text = _extract_text(data.get("Message"))
 
     return InboundMessage(
         message_id=message_id,
@@ -61,6 +58,20 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
         is_group=bool(info.get("IsGroup", False)),
         message_type=str(info.get("Type", "")),
     )
+
+
+def _extract_text(message: Any) -> str | None:
+    """Text lives under `conversation` for plain DMs and under
+    `extendedTextMessage.text` for replies/link previews (whatsmeow shape)."""
+    if not isinstance(message, dict):
+        return None
+    text = message.get("conversation")
+    if not isinstance(text, str) or not text.strip():
+        extended = message.get("extendedTextMessage")
+        text = extended.get("text") if isinstance(extended, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return text
 
 
 class WhatsAppSender(Protocol):

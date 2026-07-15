@@ -1,4 +1,4 @@
-"""The per-message pipeline: filters, then a reply.
+"""The per-message pipeline: safety checks, then a reply.
 
 The brain is a placeholder for now — the Scope Gate arrives in ticket 04 and
 real answering in ticket 05. This module owns the safety invariants that must
@@ -26,7 +26,8 @@ class RecentMessageIds:
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._capacity = capacity
 
-    def seen_before(self, message_id: str) -> bool:
+    def check_and_record(self, message_id: str) -> bool:
+        """Return True if already seen; otherwise record it and return False."""
         if message_id in self._seen:
             self._seen.move_to_end(message_id)
             return True
@@ -51,7 +52,11 @@ class Pipeline:
     async def _handle(self, message: InboundMessage) -> None:
         if message.is_from_me:
             return
-        if self._recent.seen_before(message.message_id):
+        if message.is_group:
+            # Bella never speaks in groups (spec story 24). Full input policy
+            # lands in ticket 09, but this guard must precede deployment.
+            return
+        if self._recent.check_and_record(message.message_id):
             logger.info("duplicate delivery ignored: %s", message.message_id)
             return
         if message.text is None:

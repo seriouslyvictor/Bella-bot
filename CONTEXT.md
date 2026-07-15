@@ -1,6 +1,6 @@
 # Bella Bot
 
-WhatsApp course-concierge chatbot for the SENAI Osasco course "IA Generativa Aplicada à Programação". It answers prospective students' questions about the course, offers the apostila PDF, and guides users to enrollment — and declines everything else. It doubles as a live demo of the kind of assistant the course teaches students to build.
+WhatsApp course-concierge chatbot for the SENAI-SP course "IA Generativa Aplicada à Programação" (the offering unit is a volatile fact owned by the Enrollment Card). It answers prospective students' questions about the course, offers the apostila PDF, and guides users to enrollment — and declines everything else. It doubles as a live demo of the kind of assistant the course teaches students to build.
 
 ## Language
 

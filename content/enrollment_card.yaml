@@ -42,3 +42,7 @@ human_contact: >-
   na unidade.
 # Telefone/WhatsApp da secretaria, se quiser divulgar (deixe "" para omitir):
 human_contact_phone: ""
+# Contato do responsável pelo curso, se quiser divulgar (deixe "" para omitir).
+# Obs.: o número que RECEBE as notificações de handoff fica no ambiente
+# (ADMIN_CONTACT), não aqui — este campo é o que a Bella pode dizer ao usuário.
+owner_contact: ""

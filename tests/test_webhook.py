@@ -51,6 +51,30 @@ def test_duplicate_delivery_gets_one_reply(
     assert len(sender.sent) == 1
 
 
+def test_group_messages_get_no_reply(client: TestClient, sender: FakeSender) -> None:
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi grupo", is_group=True, chat="1203630@g.us"),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == []
+
+
+def test_extended_text_message_gets_a_reply(
+    client: TestClient, sender: FakeSender
+) -> None:
+    # Replies/link previews arrive as extendedTextMessage, not conversation.
+    payload = make_webhook_payload(None, message_id="EXT1")
+    payload["data"]["Message"] = {"extendedTextMessage": {"text": "qual o horário?"}}
+
+    response = client.post(WEBHOOK, json=payload)
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    assert "qual o horário?" in sender.sent[0][1]
+
+
 def test_non_message_event_is_acked_and_ignored(
     client: TestClient, sender: FakeSender
 ) -> None:
