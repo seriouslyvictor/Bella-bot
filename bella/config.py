@@ -2,22 +2,22 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# Repo root / whatsapp_profile_picture.png. Only the fallback for a source
-# checkout — the image sets PROFILE_PICTURE_PATH explicitly (see Dockerfile),
-# because inferring it from __file__ silently resolves into site-packages when
-# the package is imported from an install rather than from /app.
-DEFAULT_PROFILE_PICTURE_PATH = (
-    Path(__file__).resolve().parent.parent / "whatsapp_profile_picture.png"
-)
-DEFAULT_CANNED_REPLIES_PATH = (
-    Path(__file__).resolve().parent.parent / "content" / "canned_replies.yaml"
-)
-DEFAULT_KNOWLEDGE_BASE_PATH = (
-    Path(__file__).resolve().parent.parent / "content" / "knowledge_base.md"
-)
-DEFAULT_ENROLLMENT_CARD_PATH = (
-    Path(__file__).resolve().parent.parent / "content" / "enrollment_card.yaml"
-)
+# Only the fallbacks for a source checkout — the image pins every one of these
+# explicitly (see Dockerfile), because inferring the root from __file__ silently
+# resolves into site-packages when the package is imported from an install
+# rather than from /app. That caveat applies to all four paths below; this is
+# its one home.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_CONTENT_DIR = _REPO_ROOT / "content"
+
+DEFAULT_PROFILE_PICTURE_PATH = _REPO_ROOT / "whatsapp_profile_picture.png"
+DEFAULT_CANNED_REPLIES_PATH = _CONTENT_DIR / "canned_replies.yaml"
+DEFAULT_KNOWLEDGE_BASE_PATH = _CONTENT_DIR / "knowledge_base.md"
+DEFAULT_ENROLLMENT_CARD_PATH = _CONTENT_DIR / "enrollment_card.yaml"
+
+
+def _path_from_env(var: str, default: Path) -> Path:
+    return Path(os.environ.get(var, default))
 
 
 @dataclass(frozen=True)
@@ -52,16 +52,16 @@ class Settings:
             bella_internal_url=os.environ["BELLA_INTERNAL_URL"],
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             bella_display_name=os.environ.get("BELLA_DISPLAY_NAME", "Bella"),
-            profile_picture_path=Path(
-                os.environ.get("PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH)
+            profile_picture_path=_path_from_env(
+                "PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH
             ),
-            canned_replies_path=Path(
-                os.environ.get("CANNED_REPLIES_PATH", DEFAULT_CANNED_REPLIES_PATH)
+            canned_replies_path=_path_from_env(
+                "CANNED_REPLIES_PATH", DEFAULT_CANNED_REPLIES_PATH
             ),
-            knowledge_base_path=Path(
-                os.environ.get("KNOWLEDGE_BASE_PATH", DEFAULT_KNOWLEDGE_BASE_PATH)
+            knowledge_base_path=_path_from_env(
+                "KNOWLEDGE_BASE_PATH", DEFAULT_KNOWLEDGE_BASE_PATH
             ),
-            enrollment_card_path=Path(
-                os.environ.get("ENROLLMENT_CARD_PATH", DEFAULT_ENROLLMENT_CARD_PATH)
+            enrollment_card_path=_path_from_env(
+                "ENROLLMENT_CARD_PATH", DEFAULT_ENROLLMENT_CARD_PATH
             ),
         )

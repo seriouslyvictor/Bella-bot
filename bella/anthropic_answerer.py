@@ -1,20 +1,18 @@
 """Claude Opus answers grounded in Bella's public course content."""
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, TextBlockParam
+from anthropic.types import TextBlockParam
 
 from bella.course_content import CourseContent
-from bella.pipeline import ConversationTurn
 from bella.scope_gate import RouteCategory
 
 logger = logging.getLogger("bella")
 
 MODEL = "claude-opus-4-8"
 MAX_TOKENS = 700
+TIMEOUT = 45
 
 PERSONA_AND_RULES = """You are Bella, the warm and friendly WhatsApp concierge
 for SENAI's generative AI programming course. You are also a live demonstration
@@ -39,15 +37,9 @@ Grounding and safety rules:
 """
 
 
-@dataclass(frozen=True)
-class CacheUsage:
-    creation_input_tokens: int
-    read_input_tokens: int
-
-
 class AnthropicAnswerer:
-    def __init__(self, api_key: str, content: CourseContent) -> None:
-        self._client = AsyncAnthropic(api_key=api_key, timeout=45, max_retries=1)
+    def __init__(self, client: AsyncAnthropic, content: CourseContent) -> None:
+        self._client = client
         self._system: list[TextBlockParam] = [
             {"type": "text", "text": PERSONA_AND_RULES},
             {
@@ -60,40 +52,28 @@ class AnthropicAnswerer:
                 "cache_control": {"type": "ephemeral"},
             },
         ]
-        self.last_cache_usage = CacheUsage(0, 0)
+        self.last_cache_read_tokens = 0
 
-    async def answer(
-        self,
-        text: str,
-        category: RouteCategory,
-        history: Sequence[ConversationTurn] = (),
-    ) -> str:
-        messages: list[MessageParam] = [
-            {"role": turn.role, "content": turn.text} for turn in history
-        ]
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Scope Gate category: {category.value}\n"
-                    f"<user_message>\n{text}\n</user_message>"
-                ),
-            }
-        )
-        response = await self._client.messages.create(
+    async def answer(self, text: str, category: RouteCategory) -> str:
+        response = await self._client.with_options(timeout=TIMEOUT).messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=self._system,
-            messages=messages,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Scope Gate category: {category.value}\n"
+                        f"<user_message>\n{text}\n</user_message>"
+                    ),
+                }
+            ],
         )
-        self.last_cache_usage = CacheUsage(
-            creation_input_tokens=response.usage.cache_creation_input_tokens or 0,
-            read_input_tokens=response.usage.cache_read_input_tokens or 0,
-        )
+        self.last_cache_read_tokens = response.usage.cache_read_input_tokens or 0
         logger.info(
             "answer prompt cache: creation_tokens=%s read_tokens=%s",
-            self.last_cache_usage.creation_input_tokens,
-            self.last_cache_usage.read_input_tokens,
+            response.usage.cache_creation_input_tokens or 0,
+            self.last_cache_read_tokens,
         )
         answer = "".join(
             block.text for block in response.content if block.type == "text"

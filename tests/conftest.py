@@ -1,13 +1,15 @@
-from collections.abc import Sequence
+import functools
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from bella.app import create_app
+from bella.canned_replies import CannedReplies
 from bella.config import Settings
+from bella.course_content import CourseContent
+from bella.pipeline import Pipeline
 from bella.scope_gate import RouteCategory
-from bella.pipeline import ConversationTurn
 
 TEST_SECRET = "test-webhook-secret"
 
@@ -44,34 +46,16 @@ class FakeScopeGate:
 
 
 class FakeAnswerer:
-    def __init__(self, response: str | None = None) -> None:
+    def __init__(self, response: str | None = None, *, fail: bool = False) -> None:
         self.seen: list[tuple[str, RouteCategory]] = []
         self.response = response
+        self.fail = fail
 
-    async def answer(
-        self,
-        text: str,
-        category: RouteCategory,
-        history: Sequence[ConversationTurn] = (),
-    ) -> str:
+    async def answer(self, text: str, category: RouteCategory) -> str:
         self.seen.append((text, category))
+        if self.fail:
+            raise RuntimeError("simulated answering failure")
         return self.response or f"placeholder answer: {text}"
-
-
-def make_test_client(
-    sender: FakeSender,
-    *,
-    scope_gate: FakeScopeGate | None = None,
-    answerer: FakeAnswerer | None = None,
-    raise_server_exceptions: bool = True,
-) -> TestClient:
-    app = create_app(
-        settings=make_settings(),
-        sender=sender,
-        scope_gate=scope_gate or FakeScopeGate(),
-        answerer=answerer or FakeAnswerer(),
-    )
-    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def make_settings() -> Settings:
@@ -83,6 +67,39 @@ def make_settings() -> Settings:
         bella_internal_url="http://bella:8000",
         anthropic_api_key="unused-in-tests",
     )
+
+
+@functools.cache
+def course_content() -> CourseContent:
+    """The real shipped content, parsed once per test run."""
+    settings = make_settings()
+    return CourseContent.from_files(
+        settings.knowledge_base_path, settings.enrollment_card_path
+    )
+
+
+@functools.cache
+def canned_replies() -> CannedReplies:
+    """The real shipped replies, parsed once per test run."""
+    return CannedReplies.from_yaml(make_settings().canned_replies_path)
+
+
+def make_test_client(
+    sender: FakeSender,
+    *,
+    scope_gate: FakeScopeGate | None = None,
+    answerer: FakeAnswerer | None = None,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
+    pipeline = Pipeline(
+        sender,
+        scope_gate or FakeScopeGate(),
+        answerer or FakeAnswerer(),
+        canned_replies(),
+        course_content().enrollment_url,
+    )
+    app = create_app(make_settings(), pipeline)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def make_webhook_payload(

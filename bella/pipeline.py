@@ -1,17 +1,17 @@
 """The per-message pipeline: safety checks, Scope Gate, then a guarded reply.
 
 This module owns the invariants that must hold from day one: never reply to
-ourselves, never reply twice to the same delivery, and never let a processing
-error escape after the webhook has already been acknowledged.
+ourselves, never reply twice to the same delivery, always send the user a
+reply, and never let a processing error escape after the webhook has already
+been acknowledged.
 """
 
 import logging
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
-from bella.answer_guard import AllowedUrlGuard
+from bella.answer_guard import strip_foreign_urls
 from bella.canned_replies import CannedReplies
 from bella.evolution import InboundMessage, WhatsAppSender
 from bella.scope_gate import RouteCategory, ScopeGate
@@ -37,19 +37,31 @@ class RecentMessageIds:
         return False
 
 
-@dataclass(frozen=True)
-class ConversationTurn:
-    role: Literal["user", "assistant"]
-    text: str
+class RefusalRotation:
+    """Bounded per-recipient refusal rotation (Postgres in ticket 06).
+
+    Out-of-scope traffic is the unbounded, adversarial surface — spam, wrong
+    numbers, injection probes — so the recipient keys are attacker-chosen and
+    must not accumulate forever. Evicting a cold recipient only costs them a
+    restart of the rotation, which is invisible.
+    """
+
+    def __init__(self, refusals: Sequence[str], capacity: int = 2048) -> None:
+        self._refusals = tuple(refusals)
+        self._next: OrderedDict[str, int] = OrderedDict()
+        self._capacity = capacity
+
+    def take(self, recipient: str) -> str:
+        index = self._next.get(recipient, 0)
+        self._next[recipient] = index + 1
+        self._next.move_to_end(recipient)
+        if len(self._next) > self._capacity:
+            self._next.popitem(last=False)
+        return self._refusals[index % len(self._refusals)]
 
 
 class Answerer(Protocol):
-    async def answer(
-        self,
-        text: str,
-        category: RouteCategory,
-        history: Sequence[ConversationTurn] = (),
-    ) -> str: ...
+    async def answer(self, text: str, category: RouteCategory) -> str: ...
 
 
 class Pipeline:
@@ -59,13 +71,14 @@ class Pipeline:
         scope_gate: ScopeGate,
         answerer: Answerer,
         canned_replies: CannedReplies,
-        answer_guard: AllowedUrlGuard,
+        enrollment_url: str,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
         self._answerer = answerer
         self._canned_replies = canned_replies
-        self._answer_guard = answer_guard
+        self._enrollment_url = enrollment_url
+        self._refusals = RefusalRotation(canned_replies.refusals)
         self._recent = RecentMessageIds()
 
     async def handle(self, message: InboundMessage) -> None:
@@ -94,16 +107,18 @@ class Pipeline:
             return
 
         try:
-            category = await self._scope_gate.classify(message.text)
+            reply = await self._reply_for(message.text, message.number)
         except Exception:
-            logger.exception("Scope Gate failed for message %s", message.message_id)
-            await self._sender.send_text(message.number, self._canned_replies.error_reply)
-            return
-
-        if category is RouteCategory.OUT_OF_SCOPE:
-            reply = self._canned_replies.take_refusal(message.number)
-        else:
-            reply = await self._answerer.answer(message.text, category)
-            reply = self._answer_guard.apply(reply)
+            # Guards the whole reply-producing step, not just one stage of it:
+            # every stage added here must degrade to a reply, never to silence.
+            logger.exception("reply production failed for %s", message.message_id)
+            reply = self._canned_replies.error_reply
         await self._sender.send_text(message.number, reply)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
+
+    async def _reply_for(self, text: str, number: str) -> str:
+        category = await self._scope_gate.classify(text)
+        if category is RouteCategory.OUT_OF_SCOPE:
+            return self._refusals.take(number)
+        answer = await self._answerer.answer(text, category)
+        return strip_foreign_urls(answer, self._enrollment_url)

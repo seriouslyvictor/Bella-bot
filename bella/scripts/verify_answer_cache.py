@@ -2,6 +2,8 @@
 
 import asyncio
 
+from anthropic import AsyncAnthropic
+
 from bella.anthropic_answerer import AnthropicAnswerer
 from bella.config import Settings
 from bella.course_content import CourseContent
@@ -13,23 +15,18 @@ async def verify() -> None:
     content = CourseContent.from_files(
         settings.knowledge_base_path, settings.enrollment_card_path
     )
-    answerer = AnthropicAnswerer(settings.anthropic_api_key, content)
+    client = AsyncAnthropic(api_key=settings.anthropic_api_key, max_retries=1)
+    answerer = AnthropicAnswerer(client, content)
     question = "Em uma frase, qual é a duração do curso?"
 
     await answerer.answer(question, RouteCategory.COURSE_QUESTION)
-    first = answerer.last_cache_usage
+    first = answerer.last_cache_read_tokens
     await answerer.answer(question, RouteCategory.COURSE_QUESTION)
-    second = answerer.last_cache_usage
+    second = answerer.last_cache_read_tokens
 
-    print(
-        "First call cache usage: "
-        f"creation={first.creation_input_tokens}, read={first.read_input_tokens}"
-    )
-    print(
-        "Second call cache usage: "
-        f"creation={second.creation_input_tokens}, read={second.read_input_tokens}"
-    )
-    if second.read_input_tokens <= 0:
+    print(f"First call cache read tokens: {first}")
+    print(f"Second call cache read tokens: {second}")
+    if second <= 0:
         raise SystemExit("FAILED: the second request did not read prompt-cache tokens")
     print("OK: repeated answering request read the stable prefix from prompt cache.")
 

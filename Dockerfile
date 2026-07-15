@@ -14,11 +14,11 @@ COPY pyproject.toml ./
 COPY bella ./bella
 RUN pip install --no-cache-dir .
 
-# Content and the presentation asset are baked in for now; the Enrollment
-# Card/Knowledge Base/canned replies aren't read by any code yet (tickets
-# 04+). Never copy the *.docx Source Documents — ADR-0001 keeps them out of
-# anything the bot or an operator-facing surface can reach, deploy image
-# included.
+# Content and the presentation asset are baked in; the Enrollment Card,
+# Knowledge Base, and canned replies are read at startup (see
+# bella/composition.py). Never copy the *.docx Source Documents — ADR-0001
+# keeps them out of anything the bot or an operator-facing surface can reach,
+# deploy image included.
 COPY content ./content
 COPY whatsapp_profile_picture.png ./
 

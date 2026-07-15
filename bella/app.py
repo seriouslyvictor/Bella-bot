@@ -5,47 +5,18 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from bella.answer_guard import AllowedUrlGuard
 from bella.config import Settings
-from bella.canned_replies import CannedReplies
-from bella.course_content import CourseContent
-from bella.evolution import EvolutionSender, WhatsAppSender, parse_webhook
-from bella.pipeline import Answerer, Pipeline
-from bella.scope_gate import ScopeGate
+from bella.evolution import parse_webhook
+from bella.pipeline import Pipeline
 
 logger = logging.getLogger("bella")
 
 
-def create_app(
-    settings: Settings,
-    sender: WhatsAppSender | None = None,
-    scope_gate: ScopeGate | None = None,
-    answerer: Answerer | None = None,
-) -> FastAPI:
-    if sender is None:
-        sender = EvolutionSender(
-            base_url=settings.evolution_url,
-            api_key=settings.evolution_api_key,
-            instance_id=settings.evolution_instance_id,
-        )
-    if scope_gate is None:
-        from bella.anthropic_gate import AnthropicScopeGate
+def create_app(settings: Settings, pipeline: Pipeline) -> FastAPI:
+    """Wire the HTTP surface onto an already-built pipeline.
 
-        scope_gate = AnthropicScopeGate(api_key=settings.anthropic_api_key)
-    content = CourseContent.from_files(
-        settings.knowledge_base_path, settings.enrollment_card_path
-    )
-    if answerer is None:
-        from bella.anthropic_answerer import AnthropicAnswerer
-
-        answerer = AnthropicAnswerer(settings.anthropic_api_key, content)
-    pipeline = Pipeline(
-        sender,
-        scope_gate,
-        answerer,
-        CannedReplies.from_yaml(settings.canned_replies_path),
-        AllowedUrlGuard(content.enrollment_url),
-    )
+    Construction lives in bella.composition — see its docstring for why.
+    """
     app = FastAPI(title="Bella", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")
@@ -86,10 +57,16 @@ def create_app(
 
 def main() -> None:
     """Entrypoint for production: uvicorn bella.app:main-created app."""
+    # Imported here, not at module scope: this is the one place that needs the
+    # real object graph, and keeping it local is what lets the rest of this
+    # module — the part tests import — stay free of the anthropic SDK.
     import uvicorn
 
+    from bella.composition import build_pipeline
+
     logging.basicConfig(level=logging.INFO)
-    app = create_app(Settings.from_env())
+    settings = Settings.from_env()
+    app = create_app(settings, build_pipeline(settings))
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 

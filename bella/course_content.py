@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-import yaml
+from bella.yaml_content import parse_yaml_mapping, require_text
+
+WHAT = "Enrollment Card"
 
 
 @dataclass(frozen=True)
@@ -17,17 +18,10 @@ class CourseContent:
     def from_files(
         cls, knowledge_base_path: Path, enrollment_card_path: Path
     ) -> "CourseContent":
-        knowledge_base = knowledge_base_path.read_text(encoding="utf-8")
         enrollment_card = enrollment_card_path.read_text(encoding="utf-8")
-        parsed: Any = yaml.safe_load(enrollment_card)
-        if (
-            not isinstance(parsed, dict)
-            or not isinstance(parsed.get("enrollment_url"), str)
-            or not parsed["enrollment_url"]
-        ):
-            raise ValueError("Enrollment Card must define enrollment_url")
+        parsed = parse_yaml_mapping(enrollment_card, WHAT)
         return cls(
-            knowledge_base=knowledge_base,
+            knowledge_base=knowledge_base_path.read_text(encoding="utf-8"),
             enrollment_card=enrollment_card,
-            enrollment_url=parsed["enrollment_url"],
+            enrollment_url=require_text(parsed, "enrollment_url", WHAT),
         )
