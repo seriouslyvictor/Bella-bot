@@ -108,12 +108,62 @@ declares no `env_file` of its own.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `EVOLUTION_API_KEY` | Owner's existing local `.env` | The Evolution GO instance token — same value already used for the walking skeleton |
-| `EVOLUTION_INSTANCE_ID` | Owner's existing local `.env` | — |
+| `EVOLUTION_API_KEY` | The instance **token** — see "Which Evolution GO credential" below | **Not** `GLOBAL_API_KEY`. This is the one that caused a live 401 |
+| `EVOLUTION_INSTANCE_ID` | The instance UUID | Sent as a header for docs parity; evolution-go ignores it (see below) |
 | `WEBHOOK_SECRET` | Generate fresh: `python -c "import secrets; print(secrets.token_urlsafe(32))"` | Lives in the webhook URL path (`/webhook/<secret>`), not a header — see `bella/app.py` |
-| `EVOLUTION_URL` | `http://evolution-go:8080` | Observed alias on the shared network. Required — the app won't boot without it |
+| `EVOLUTION_URL` | `http://evolution-go:8080` | Required. The fully-qualified `http://evolution-go-ohilulk0h2zy70nhcc536np4:8080` is an equally valid alias on this network and is what's currently set — both resolve; no need to change it |
 | `BELLA_INTERNAL_URL` | `http://bella:8000` | The alias declared in `docker-compose.yml`. Required. **Never** Bella's container name — that changes every redeploy |
 | `BELLA_DISPLAY_NAME` | e.g. `Bella` | What `set_presentation.py` sets as the WhatsApp display name |
+| `ANTHROPIC_API_KEY` | Claude API key | Required by the Scope Gate from ticket 04 onward; store as a masked secret |
+
+### Which Evolution GO credential
+
+Evolution GO has two credentials and they are not interchangeable. Getting
+this wrong is what produced `401 Unauthorized` from `/instance/connect` on
+the first attempt.
+
+Verified in evolution-go's source (`pkg/routes/routes.go` registers the
+routes; `pkg/middleware/auth_middleware.go` defines both middlewares):
+
+| Routes | Middleware | Credential |
+|---|---|---|
+| `/send/text`, `/instance/connect`, `/instance/status`, `/user/profilePicture`, `/user/profileName`, … | `Auth` | **instance token** |
+| `/instance/create`, `/instance/all`, `/instance/info/:id`, `/instance/delete/:id`, … | `AuthAdmin` | `GLOBAL_API_KEY` |
+
+`Auth` takes the `apikey` header and looks up the instance *by that token*
+(`GetInstanceByToken` → `WHERE token = ?`). It has **no** global-key
+fallback, so `GLOBAL_API_KEY` returns 401 on every route Bella uses.
+`AuthAdmin` compares `apikey` to `GLOBAL_API_KEY` and is only used by routes
+Bella never calls.
+
+**So `EVOLUTION_API_KEY` must hold the instance token.** Note there are two
+`/instance` route groups with *different* middleware — `/instance/connect` is
+in the `Auth` (instance-token) one, which is easy to miss when skimming.
+
+Watch out: the hosted webhook documentation says to call `/instance/connect`
+with `apikey: SUA_GLOBAL_API_KEY` plus an `instanceId` header. **Both halves
+are wrong.** evolution-go reads no header other than `apikey` anywhere in its
+codebase, and evolution-go's own in-repo wiki contradicts the hosted page:
+"Use o `token` que você definiu ao criar a instância, NÃO a `GLOBAL_API_KEY`"
+(`docs/wiki/guias-api/api-instances.md`). Trust the source.
+
+To find the instance token — this call *does* take the global key, since
+`/instance/all` is an `AuthAdmin` route:
+
+```bash
+docker exec <evolution-go-container> \
+  wget -qO- --header="apikey: <GLOBAL_API_KEY>" http://localhost:8080/instance/all
+```
+
+Read the `token` field of your instance from the JSON. `GLOBAL_API_KEY` is in
+the Evolution stack's own environment in Coolify. That response contains
+secrets — don't paste it anywhere shared.
+
+Because `Auth` identifies the instance purely from the token,
+`EVOLUTION_INSTANCE_ID` is not what selects the instance; changing it
+re-targets nothing. It's sent as a header only because the published docs
+specify it. Harmless, and worth keeping in case a later version honours it —
+but don't rely on it meaning anything today.
 
 Unlike the previous Dockerfile-based plan, every value is known up front — no
 placeholder-then-fix-it dance, because the hostname comes from our own
@@ -183,6 +233,12 @@ secret is in the path and this output lands in your terminal scrollback.
 Expect `OK: Evolution GO has the expected webhook URL on file.` A `MISMATCH`
 line exits non-zero.
 
+If this fails with `401 Unauthorized`, `EVOLUTION_API_KEY` holds the wrong
+kind of key — see "Which Evolution GO credential" above. The script says so
+explicitly rather than surfacing a bare HTTP error. Fix the variable and
+redeploy before continuing: the same credential is what Bella replies with,
+so criterion 1 below cannot pass while this is wrong.
+
 Re-run any time `WEBHOOK_SECRET` or `BELLA_INTERNAL_URL` changes. You do
 **not** need to re-run it after an ordinary redeploy — that's the entire
 point of the alias.
@@ -203,7 +259,11 @@ Depends on Step 5's Evolution-GO→Bella check having passed.
 
 1. **A text DM to Bella's real number gets the skeleton reply, served from
    the VPS.** Message the connected number from any phone; expect the
-   ticket-02 echo reply within a few seconds.
+   ticket-02 echo reply within a few seconds. This exercises
+   `EVOLUTION_API_KEY` a second way — Bella's reply goes out via `/send/text`,
+   which needs the same instance token `/instance/connect` did. If Step 6
+   succeeded, this half is already proven; if the reply never arrives, check
+   Bella's logs for a 401 from `/send/text` before suspecting the webhook.
 2. **The container reaches Postgres and Evolution GO over the internal
    network; no new published ports for Postgres.** Reachability is Step 5.
    The no-published-port half is a separate question — being on a shared

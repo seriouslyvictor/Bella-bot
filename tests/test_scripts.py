@@ -4,14 +4,20 @@ These never touch the network: bella.scripts._client.post is monkeypatched
 to a recorder, so the assertions are about URL/payload construction — in
 particular that the webhook secret lands in the path, not the body or a
 header, matching bella/app.py's `/webhook/{secret}` contract.
+
+The _client tests at the bottom are the exception: they drive the real post()
+through a mock transport, because the header it builds is the thing that
+actually broke in production (a 401 from sending the wrong kind of key).
 """
 
 from typing import Any
 
+import httpx
 import pytest
 
 from bella.config import Settings
 from bella.scripts import register_webhook, set_presentation
+from bella.scripts._client import post
 
 
 class RecordingPost:
@@ -32,7 +38,10 @@ class RecordingPost:
 def make_settings() -> Settings:
     return Settings(
         evolution_url="http://evolution-go:8080",
-        evolution_api_key="unused-in-tests",
+        # Named for the distinction that matters: Evolution GO's Auth
+        # middleware resolves this to an instance by token lookup, so the
+        # global key would 401 here.
+        evolution_api_key="the-instance-token",
         evolution_instance_id="unused-in-tests",
         webhook_secret="s3cr3t",
         bella_internal_url="http://bella:8000",
@@ -98,3 +107,38 @@ def test_set_presentation_sets_picture_then_name(monkeypatch: pytest.MonkeyPatch
     _, name_path, name_body = recorder.calls[1]
     assert name_path == "/user/profileName"
     assert name_body == {"name": "Bella"}
+
+
+def _mock_client(handler: Any) -> httpx.Client:
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_post_authenticates_with_the_instance_token_in_the_apikey_header() -> None:
+    # /instance/connect and /user/* are Auth-middleware routes: the apikey
+    # header must carry the instance token, never GLOBAL_API_KEY.
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"message": "success"})
+
+    post(make_settings(), "/instance/connect", {"webhookUrl": "x"}, client=_mock_client(handler))
+
+    assert seen[0].headers["apikey"] == "the-instance-token"
+    assert str(seen[0].url) == "http://evolution-go:8080/instance/connect"
+
+
+def test_post_explains_a_401_instead_of_leaving_a_bare_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "not authorized"})
+
+    with pytest.raises(RuntimeError, match="INSTANCE token"):
+        post(make_settings(), "/instance/connect", {}, client=_mock_client(handler))
+
+
+def test_post_still_raises_on_other_http_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        post(make_settings(), "/instance/connect", {}, client=_mock_client(handler))
