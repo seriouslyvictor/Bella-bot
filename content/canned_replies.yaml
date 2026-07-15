@@ -1,0 +1,51 @@
+# =====================================================================
+# RESPOSTAS PRONTAS (Canned Replies)
+# =====================================================================
+# Estas mensagens são enviadas VERBATIM — sem passar por nenhum modelo
+# (ver docs/adr/0002). Edite os textos à vontade; mantenha as chaves.
+#
+# refusals: recusas para mensagens fora de escopo. A Bella sorteia uma
+#   variante da lista do idioma detectado (pt é o padrão).
+# media_reply: resposta a áudios, imagens, figurinhas e documentos.
+# rate_limit_reply: enviada UMA vez quando o usuário excede o limite.
+# error_reply: enviada quando ocorre uma falha interna (a Bella nunca
+#   responde sem passar pelas proteções; na dúvida, pede para tentar de novo).
+# =====================================================================
+
+refusals:
+  pt:
+    - >-
+      Eu sou a Bella, assistente do curso de IA Generativa do SENAI 😊 Só
+      consigo ajudar com dúvidas sobre o curso, a apostila e a inscrição.
+      Quer saber alguma coisa sobre o curso?
+    - >-
+      Essa eu vou ficar te devendo! 😅 Eu fui criada só para falar sobre o
+      curso "IA Generativa Aplicada a Programação" do SENAI — posso te contar
+      sobre o conteúdo, as datas ou como se inscrever.
+    - >-
+      Hmm, isso foge do meu assunto 🙈 Eu cuido apenas do curso de IA
+      Generativa do SENAI: conteúdo, apostila e inscrições. Como posso te
+      ajudar com isso?
+  en:
+    - >-
+      I'm Bella, the assistant for SENAI's Generative AI course 😊 I can only
+      help with questions about the course, its workbook, and enrollment.
+      Anything you'd like to know about the course? (The course is taught in
+      Portuguese.)
+  es:
+    - >-
+      ¡Soy Bella, la asistente del curso de IA Generativa del SENAI! 😊 Solo
+      puedo ayudar con dudas sobre el curso, el material y la inscripción.
+      ¿Quieres saber algo sobre el curso? (El curso se imparte en portugués.)
+
+media_reply: >-
+  Por enquanto eu só entendo mensagens de texto 😊 Pode escrever a sua dúvida
+  sobre o curso que eu respondo!
+
+rate_limit_reply: >-
+  Opa, muitas mensagens de uma vez! 😅 Me dá um minutinho e continuamos a
+  conversa, combinado?
+
+error_reply: >-
+  Tive um probleminha técnico aqui do meu lado 🙈 Pode enviar sua mensagem de
+  novo em instantes?

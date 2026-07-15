@@ -1,0 +1,44 @@
+# =====================================================================
+# ENROLLMENT CARD (Cartão de Inscrição)
+# =====================================================================
+# Fonte ÚNICA de fatos voláteis de matrícula (ver CONTEXT.md).
+# A Bella só afirma datas, valores e vagas que estejam NESTE arquivo;
+# o que não estiver aqui vira "não sei — confira na página de inscrição".
+#
+# Como editar: atualize os campos abaixo quando abrir uma nova turma.
+# `enrollment_url` também alimenta a lista de links permitidos do bot —
+# é o ÚNICO link que a Bella pode enviar.
+# Campos vazios ("") são simplesmente omitidos das respostas.
+# =====================================================================
+
+course_name: "Inteligências Artificiais Generativas Aplicada a Programação — ChatGPT"
+unit: "SENAI Jandira"
+modality: "Presencial"
+enrollment_url: "https://www.sp.senai.br/inscricaobolsapresencial/inteligencias-artificiais-generativas-aplicada-a-programacao-chatgpt/101299/127/1106449"
+
+# --- Turma atual ---
+class_start: "25/07/2026"
+class_end: "29/08/2026"
+schedule: "Aos sábados, das 08:00 às 17:00"
+seats: "19 vagas"
+price: >-
+  Turma com vagas de bolsa (gratuitas). A reserva é feita online pelo link de
+  inscrição e a matrícula é confirmada presencialmente na escola.
+
+# --- Como se inscrever ---
+enrollment_steps: >-
+  1) Reserve sua vaga pelo link de inscrição.
+  2) Após a reserva, você tem até 3 dias para confirmar a matrícula
+  presencialmente na escola.
+  3) Documentos necessários: RG, CPF e comprovante de endereço.
+  4) Alunos menores de idade precisam estar acompanhados do responsável legal
+  (o mesmo registrado no site — não pode ser amigo ou familiar que não seja
+  responsável legal por lei).
+
+# --- Contato humano ---
+# Usado quando o usuário pede para falar com uma pessoa (ver ticket 08).
+human_contact: >-
+  Equipe do SENAI Jandira — pela página de inscrição acima ou presencialmente
+  na unidade.
+# Telefone/WhatsApp da secretaria, se quiser divulgar (deixe "" para omitir):
+human_contact_phone: ""
