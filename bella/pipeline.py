@@ -8,8 +8,11 @@ delivery, never let a processing error escape (the webhook was already acked).
 
 import logging
 from collections import OrderedDict
+from typing import Protocol
 
+from bella.canned_replies import CannedReplies
 from bella.evolution import InboundMessage, WhatsAppSender
+from bella.scope_gate import RouteCategory, ScopeGate
 
 logger = logging.getLogger("bella")
 
@@ -37,9 +40,27 @@ class RecentMessageIds:
         return False
 
 
+class Answerer(Protocol):
+    async def answer(self, text: str, category: RouteCategory) -> str: ...
+
+
+class PlaceholderAnswerer:
+    async def answer(self, text: str, category: RouteCategory) -> str:
+        return SKELETON_REPLY.format(text=text)
+
+
 class Pipeline:
-    def __init__(self, sender: WhatsAppSender) -> None:
+    def __init__(
+        self,
+        sender: WhatsAppSender,
+        scope_gate: ScopeGate,
+        answerer: Answerer,
+        canned_replies: CannedReplies,
+    ) -> None:
         self._sender = sender
+        self._scope_gate = scope_gate
+        self._answerer = answerer
+        self._canned_replies = canned_replies
         self._recent = RecentMessageIds()
 
     async def handle(self, message: InboundMessage) -> None:
@@ -67,6 +88,16 @@ class Pipeline:
             )
             return
 
-        reply = SKELETON_REPLY.format(text=message.text)
+        try:
+            category = await self._scope_gate.classify(message.text)
+        except Exception:
+            logger.exception("Scope Gate failed for message %s", message.message_id)
+            await self._sender.send_text(message.number, self._canned_replies.error_reply)
+            return
+
+        if category is RouteCategory.OUT_OF_SCOPE:
+            reply = self._canned_replies.take_refusal(message.number)
+        else:
+            reply = await self._answerer.answer(message.text, category)
         await self._sender.send_text(message.number, reply)
         logger.info("replied to %s (message %s)", message.number, message.message_id)

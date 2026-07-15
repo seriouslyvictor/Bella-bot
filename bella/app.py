@@ -6,20 +6,36 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from bella.config import Settings
+from bella.canned_replies import CannedReplies
 from bella.evolution import EvolutionSender, WhatsAppSender, parse_webhook
-from bella.pipeline import Pipeline
+from bella.pipeline import Answerer, Pipeline, PlaceholderAnswerer
+from bella.scope_gate import ScopeGate
 
 logger = logging.getLogger("bella")
 
 
-def create_app(settings: Settings, sender: WhatsAppSender | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    sender: WhatsAppSender | None = None,
+    scope_gate: ScopeGate | None = None,
+    answerer: Answerer | None = None,
+) -> FastAPI:
     if sender is None:
         sender = EvolutionSender(
             base_url=settings.evolution_url,
             api_key=settings.evolution_api_key,
             instance_id=settings.evolution_instance_id,
         )
-    pipeline = Pipeline(sender)
+    if scope_gate is None:
+        from bella.anthropic_gate import AnthropicScopeGate
+
+        scope_gate = AnthropicScopeGate(api_key=settings.anthropic_api_key)
+    pipeline = Pipeline(
+        sender,
+        scope_gate,
+        answerer or PlaceholderAnswerer(),
+        CannedReplies.from_yaml(settings.canned_replies_path),
+    )
     app = FastAPI(title="Bella", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")

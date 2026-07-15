@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from bella.app import create_app
 from bella.config import Settings
+from bella.scope_gate import RouteCategory
 
 TEST_SECRET = "test-webhook-secret"
 
@@ -22,6 +23,49 @@ class FakeSender:
         self.sent.append((number, text))
 
 
+class FakeScopeGate:
+    def __init__(
+        self,
+        category: RouteCategory = RouteCategory.COURSE_QUESTION,
+        *,
+        fail: bool = False,
+    ) -> None:
+        self.category = category
+        self.fail = fail
+        self.seen: list[str] = []
+
+    async def classify(self, text: str) -> RouteCategory:
+        self.seen.append(text)
+        if self.fail:
+            raise RuntimeError("simulated Scope Gate failure")
+        return self.category
+
+
+class FakeAnswerer:
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, RouteCategory]] = []
+
+    async def answer(self, text: str, category: RouteCategory) -> str:
+        self.seen.append((text, category))
+        return f"placeholder answer: {text}"
+
+
+def make_test_client(
+    sender: FakeSender,
+    *,
+    scope_gate: FakeScopeGate | None = None,
+    answerer: FakeAnswerer | None = None,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
+    app = create_app(
+        settings=make_settings(),
+        sender=sender,
+        scope_gate=scope_gate or FakeScopeGate(),
+        answerer=answerer or FakeAnswerer(),
+    )
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
+
+
 def make_settings() -> Settings:
     return Settings(
         evolution_url="http://evolution-go:8080",
@@ -29,6 +73,7 @@ def make_settings() -> Settings:
         evolution_instance_id="unused-in-tests",
         webhook_secret=TEST_SECRET,
         bella_internal_url="http://bella:8000",
+        anthropic_api_key="unused-in-tests",
     )
 
 
@@ -73,5 +118,4 @@ def sender() -> FakeSender:
 
 @pytest.fixture()
 def client(sender: FakeSender) -> TestClient:
-    app = create_app(settings=make_settings(), sender=sender)
-    return TestClient(app)
+    return make_test_client(sender)

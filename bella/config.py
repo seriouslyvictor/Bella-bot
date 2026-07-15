@@ -9,6 +9,9 @@ from pathlib import Path
 DEFAULT_PROFILE_PICTURE_PATH = (
     Path(__file__).resolve().parent.parent / "whatsapp_profile_picture.png"
 )
+DEFAULT_CANNED_REPLIES_PATH = (
+    Path(__file__).resolve().parent.parent / "content" / "canned_replies.yaml"
+)
 
 
 @dataclass(frozen=True)
@@ -26,8 +29,10 @@ class Settings:
     # mismatch doesn't raise anywhere, it just means webhooks silently never
     # arrive. Never a public address.
     bella_internal_url: str
+    anthropic_api_key: str = ""
     bella_display_name: str = "Bella"
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH
+    canned_replies_path: Path = DEFAULT_CANNED_REPLIES_PATH
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,8 +42,12 @@ class Settings:
             evolution_instance_id=os.environ["EVOLUTION_INSTANCE_ID"],
             webhook_secret=os.environ["WEBHOOK_SECRET"],
             bella_internal_url=os.environ["BELLA_INTERNAL_URL"],
+            anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             bella_display_name=os.environ.get("BELLA_DISPLAY_NAME", "Bella"),
             profile_picture_path=Path(
                 os.environ.get("PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH)
+            ),
+            canned_replies_path=Path(
+                os.environ.get("CANNED_REPLIES_PATH", DEFAULT_CANNED_REPLIES_PATH)
             ),
         )
