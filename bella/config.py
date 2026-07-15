@@ -13,19 +13,18 @@ DEFAULT_PROFILE_PICTURE_PATH = (
 
 @dataclass(frozen=True)
 class Settings:
-    # Evolution GO's base URL on the shared Docker network. Coolify's
-    # "Connect to Predefined Networks" breaks short-name DNS, so in the real
-    # deployment this is the fully-qualified `evolution-go-<stack-uuid>:8080`
-    # — no default here, because the obvious one is wrong where it counts.
+    # Evolution GO's base URL on the shared Docker network — its container
+    # carries the `evolution-go` alias there, so the short name resolves.
     evolution_url: str
     evolution_api_key: str
     evolution_instance_id: str
     webhook_secret: str
-    # Where Evolution GO can reach Bella on that same network — the address
-    # her webhook and profile picture are registered under (see
-    # bella/scripts/). Same fully-qualified naming rule, same no-default
-    # reasoning, and doubly so: a wrong value here doesn't raise anywhere, it
-    # just means webhooks silently never arrive. Never a public address.
+    # Where Evolution GO reaches Bella on that same network: the `bella` alias
+    # declared in docker-compose.yml (her container name is not stable across
+    # redeploys, the alias is). Required rather than defaulted despite the
+    # value being predictable — it has to agree with that compose alias, and a
+    # mismatch doesn't raise anywhere, it just means webhooks silently never
+    # arrive. Never a public address.
     bella_internal_url: str
     bella_display_name: str = "Bella"
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH

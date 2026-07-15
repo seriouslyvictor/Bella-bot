@@ -1,6 +1,8 @@
-# Small, non-root image for the FastAPI service. No secrets are baked in —
-# everything the app and the deploy scripts need comes from environment
-# variables supplied at runtime (see docs/deploy.md).
+# Small, non-root image for the FastAPI service. Built via docker-compose.yml
+# (`build: .`), which is the deployment artifact Coolify consumes — not used
+# as a Coolify build pack directly, see docs/deploy.md for why. No secrets are
+# baked in; everything the app and the deploy scripts need comes from
+# environment variables supplied at runtime.
 FROM python:3.12-slim
 
 WORKDIR /app

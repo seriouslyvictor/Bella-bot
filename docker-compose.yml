@@ -1,24 +1,31 @@
-# Reference compose file — for a local sanity check of the image and the
-# network wiring before trusting Coolify with it. Not required for the
-# Coolify deploy itself if you use Coolify's "Dockerfile" resource type
-# (see docs/deploy.md); use this instead if you pick Coolify's "Docker
-# Compose" resource type.
+# THE deployment artifact. Coolify builds Bella from this file via the
+# Docker Compose build pack — the `networks:` block below is what joins her
+# to the Evolution stack's network, which is why no Coolify network toggle is
+# involved (that toggle only exists for Compose *Services* anyway).
+#
+# Coolify rewrites this file before deploying (parser v5,
+# bootstrap/helpers/parsers.php: applicationParser). What it does, verified
+# against that source:
+#   - preserves this top-level `networks:` block verbatim, adding its own
+#     `<app-uuid>` network alongside;
+#   - preserves the service `aliases:` below verbatim;
+#   - force-overrides container_name to `bella-<app-uuid>-<timestamp>`, which
+#     changes on EVERY redeploy — hence the alias, which does not;
+#   - injects `env_file: [.env]` and writes that .env from the Coolify env
+#     panel, which is why there's no env_file here.
+# Keep Coolify's "Raw Compose Deployment" setting OFF: it skips all of the
+# above, including the .env injection that gets the env vars in.
 services:
   bella:
     build: .
-    # EVOLUTION_URL and BELLA_INTERNAL_URL are required and deliberately have
-    # no default — under Coolify the reachable names are the fully-qualified
-    # `<service>-<stack-uuid>` forms, so any short-name default here would be
-    # wrong exactly where it matters. See docs/deploy.md.
-    env_file:
-      - .env
     networks:
       evolution:
         aliases:
+          # The stable name Evolution GO reaches Bella on (BELLA_INTERNAL_URL).
+          # Bella's container name is not stable across redeploys; this is.
           - bella
-    # No `ports:` — Bella is internal-only (see docs/deploy.md). Evolution GO
-    # reaches her by name on the shared network; nothing needs to reach her
-    # from outside the VPS.
+    # No `ports:` — Bella is internal-only (see docs/deploy.md). Containers
+    # on a shared network reach each other without publishing anything.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -27,10 +34,8 @@ services:
       start_period: 10s
 
 networks:
-  # The Evolution GO stack's existing network, as observed on the VPS.
-  # NOTE: the short `bella` alias above works under plain compose but NOT
-  # under the Coolify deploy this repo actually targets — Coolify's "Connect
-  # to Predefined Networks" breaks short-name DNS.
   evolution:
+    # The Evolution GO stack's existing network, observed on the VPS.
+    # `external: true` means "attach to this, don't create it".
     name: ohilulk0h2zy70nhcc536np4
     external: true
