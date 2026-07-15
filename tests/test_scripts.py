@@ -145,7 +145,7 @@ def test_post_still_raises_on_other_http_errors() -> None:
 
 
 def test_database_provisioning_refuses_an_evolution_database_url() -> None:
-    with pytest.raises(ValueError, match="maintenance database"):
+    with pytest.raises(ValueError, match="POSTGRES_ADMIN_URL"):
         provision_database.require_maintenance_database(
             "postgresql://postgres:secret@postgres:5432/evolution"
         )

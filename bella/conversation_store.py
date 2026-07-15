@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol, cast
 
-from psycopg.conninfo import conninfo_to_dict
 from psycopg_pool import AsyncConnectionPool
+
+from bella.database import require_database_name
 
 HISTORY_LIMIT = 50
 
@@ -117,11 +118,11 @@ class PostgresConversationStore:
         *,
         required_database_name: str | None = None,
     ) -> None:
-        database_name = conninfo_to_dict(database_url).get("dbname")
-        if required_database_name is not None and database_name != required_database_name:
-            raise ValueError(
-                f"Bella must use the {required_database_name!r} database, "
-                f"not {database_name!r}"
+        if required_database_name is not None:
+            require_database_name(
+                database_url,
+                required_database_name,
+                setting_name="Bella's runtime database URL",
             )
         self._pool = AsyncConnectionPool(
             database_url,

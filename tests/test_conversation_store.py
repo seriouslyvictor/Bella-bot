@@ -64,7 +64,7 @@ def test_retention_deletes_only_conversations_idle_for_more_than_120_days() -> N
 
 
 def test_production_store_refuses_to_connect_to_an_evolution_database() -> None:
-    with pytest.raises(ValueError, match="must use the 'bella' database"):
+    with pytest.raises(ValueError, match="must point to the 'bella' database"):
         PostgresConversationStore(
             "postgresql://postgres:secret@postgres:5432/evolution",
             required_database_name="bella",

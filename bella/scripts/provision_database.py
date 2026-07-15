@@ -4,19 +4,19 @@ import os
 
 import psycopg
 from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict
+
+from bella.database import require_database_name
 
 BELLA_DATABASE_NAME = "bella"
 MAINTENANCE_DATABASE_NAME = "postgres"
 
 
 def require_maintenance_database(admin_url: str) -> None:
-    database_name = conninfo_to_dict(admin_url).get("dbname")
-    if database_name != MAINTENANCE_DATABASE_NAME:
-        raise ValueError(
-            "POSTGRES_ADMIN_URL must point to the 'postgres' maintenance database; "
-            f"got {database_name!r}"
-        )
+    require_database_name(
+        admin_url,
+        MAINTENANCE_DATABASE_NAME,
+        setting_name="POSTGRES_ADMIN_URL",
+    )
 
 
 def main() -> None:
