@@ -12,6 +12,12 @@ DEFAULT_PROFILE_PICTURE_PATH = (
 DEFAULT_CANNED_REPLIES_PATH = (
     Path(__file__).resolve().parent.parent / "content" / "canned_replies.yaml"
 )
+DEFAULT_KNOWLEDGE_BASE_PATH = (
+    Path(__file__).resolve().parent.parent / "content" / "knowledge_base.md"
+)
+DEFAULT_ENROLLMENT_CARD_PATH = (
+    Path(__file__).resolve().parent.parent / "content" / "enrollment_card.yaml"
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,8 @@ class Settings:
     bella_display_name: str = "Bella"
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH
     canned_replies_path: Path = DEFAULT_CANNED_REPLIES_PATH
+    knowledge_base_path: Path = DEFAULT_KNOWLEDGE_BASE_PATH
+    enrollment_card_path: Path = DEFAULT_ENROLLMENT_CARD_PATH
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -49,5 +57,11 @@ class Settings:
             ),
             canned_replies_path=Path(
                 os.environ.get("CANNED_REPLIES_PATH", DEFAULT_CANNED_REPLIES_PATH)
+            ),
+            knowledge_base_path=Path(
+                os.environ.get("KNOWLEDGE_BASE_PATH", DEFAULT_KNOWLEDGE_BASE_PATH)
+            ),
+            enrollment_card_path=Path(
+                os.environ.get("ENROLLMENT_CARD_PATH", DEFAULT_ENROLLMENT_CARD_PATH)
             ),
         )

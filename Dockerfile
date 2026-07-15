@@ -27,6 +27,8 @@ COPY whatsapp_profile_picture.png ./
 # as `python -m bella.app` from this WORKDIR.
 ENV PROFILE_PICTURE_PATH=/app/whatsapp_profile_picture.png
 ENV CANNED_REPLIES_PATH=/app/content/canned_replies.yaml
+ENV KNOWLEDGE_BASE_PATH=/app/content/knowledge_base.md
+ENV ENROLLMENT_CARD_PATH=/app/content/enrollment_card.yaml
 
 # Runs as an unprivileged user; the process never needs root.
 RUN useradd --create-home --uid 1000 bella && chown -R bella:bella /app

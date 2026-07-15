@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from bella.app import create_app
 from bella.config import Settings
 from bella.scope_gate import RouteCategory
+from bella.pipeline import ConversationTurn
 
 TEST_SECRET = "test-webhook-secret"
 
@@ -42,12 +44,18 @@ class FakeScopeGate:
 
 
 class FakeAnswerer:
-    def __init__(self) -> None:
+    def __init__(self, response: str | None = None) -> None:
         self.seen: list[tuple[str, RouteCategory]] = []
+        self.response = response
 
-    async def answer(self, text: str, category: RouteCategory) -> str:
+    async def answer(
+        self,
+        text: str,
+        category: RouteCategory,
+        history: Sequence[ConversationTurn] = (),
+    ) -> str:
         self.seen.append((text, category))
-        return f"placeholder answer: {text}"
+        return self.response or f"placeholder answer: {text}"
 
 
 def make_test_client(

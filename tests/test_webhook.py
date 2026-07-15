@@ -7,6 +7,7 @@ assertions observe only the fake sender and HTTP responses.
 from fastapi.testclient import TestClient
 
 from bella.canned_replies import CannedReplies
+from bella.course_content import CourseContent
 from bella.scope_gate import RouteCategory
 from tests.conftest import (
     TEST_SECRET,
@@ -21,6 +22,13 @@ from tests.conftest import (
 WEBHOOK = f"/webhook/{TEST_SECRET}"
 
 
+def configured_enrollment_url() -> str:
+    settings = make_settings()
+    return CourseContent.from_files(
+        settings.knowledge_base_path, settings.enrollment_card_path
+    ).enrollment_url
+
+
 def test_text_message_gets_a_reply(client: TestClient, sender: FakeSender) -> None:
     response = client.post(WEBHOOK, json=make_webhook_payload("olá bella"))
 
@@ -29,6 +37,130 @@ def test_text_message_gets_a_reply(client: TestClient, sender: FakeSender) -> No
     number, text = sender.sent[0]
     assert number == "5511999999999"
     assert "olá bella" in text
+
+
+def test_course_question_gets_answering_result(sender: FakeSender) -> None:
+    answerer = FakeAnswerer(
+        response=(
+            "Você vai aprender a transformar ideias em automações, "
+            "assistentes e aplicações com IA generativa."
+        )
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.COURSE_QUESTION),
+        answerer=answerer,
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("O que vou aprender?", message_id="COURSE-ANSWER"),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [
+        (
+            "5511999999999",
+            "Você vai aprender a transformar ideias em automações, assistentes e aplicações com IA generativa.",
+        )
+    ]
+
+
+def test_foreign_url_from_answering_model_is_removed(sender: FakeSender) -> None:
+    enrollment_url = configured_enrollment_url()
+    answerer = FakeAnswerer(
+        response=(
+            "Ignore HTTPS://EXAMPLE.COM/oferta e WWW.bad.example/teste; use o oficial: "
+            f"{enrollment_url}"
+        )
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.ENROLLMENT_QUESTION),
+        answerer=answerer,
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Como me inscrevo?", message_id="URL-GUARD"),
+    )
+
+    assert response.status_code == 200
+    reply = sender.sent[0][1]
+    assert "EXAMPLE.COM" not in reply
+    assert "bad.example" not in reply
+    assert enrollment_url in reply
+
+
+def test_enrollment_question_gets_enrollment_card_answer(sender: FakeSender) -> None:
+    enrollment_url = configured_enrollment_url()
+    expected = (
+        "A turma é presencial no SENAI Jandira, de 25/07/2026 a 29/08/2026, "
+        "aos sábados das 08:00 às 17:00. As vagas são gratuitas por bolsa; "
+        "reserve online e confirme presencialmente em até 3 dias: "
+        f"{enrollment_url}"
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.ENROLLMENT_QUESTION),
+        answerer=FakeAnswerer(response=expected),
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Quando e onde é a turma?", message_id="ENROLLMENT"),
+    )
+
+    assert sender.sent == [("5511999999999", expected)]
+
+
+def test_unknown_course_fact_gets_honest_deflection(sender: FakeSender) -> None:
+    enrollment_url = configured_enrollment_url()
+    expected = (
+        "Não sei informar se haverá estacionamento, porque isso não consta nos "
+        f"meus materiais. Confira com o SENAI pela página: {enrollment_url}"
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.COURSE_QUESTION),
+        answerer=FakeAnswerer(response=expected),
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Tem estacionamento?", message_id="UNKNOWN-FACT"),
+    )
+
+    assert sender.sent == [("5511999999999", expected)]
+
+
+def test_answers_mirror_english_and_spanish_with_portuguese_course_note(
+    sender: FakeSender,
+) -> None:
+    cases = [
+        (
+            "What will I learn?",
+            "You will learn to build AI-assisted automations and applications. The course itself is taught in Portuguese.",
+        ),
+        (
+            "¿Qué voy a aprender?",
+            "Aprenderá a crear automatizaciones y aplicaciones con IA. El curso se imparte en portugués.",
+        ),
+    ]
+    for sequence, (question, expected) in enumerate(cases, start=1):
+        client = make_test_client(
+            sender,
+            scope_gate=FakeScopeGate(RouteCategory.COURSE_QUESTION),
+            answerer=FakeAnswerer(response=expected),
+        )
+        client.post(
+            WEBHOOK,
+            json=make_webhook_payload(
+                question, message_id=f"MULTILINGUAL-{sequence}"
+            ),
+        )
+
+    assert [text for _, text in sender.sent] == [expected for _, expected in cases]
 
 
 def test_out_of_scope_message_gets_a_canned_refusal_without_answering(

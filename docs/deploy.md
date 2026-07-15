@@ -243,6 +243,27 @@ Re-run any time `WEBHOOK_SECRET` or `BELLA_INTERNAL_URL` changes. You do
 **not** need to re-run it after an ordinary redeploy — that's the entire
 point of the alias.
 
+### Verify the answering prompt cache (ticket 05)
+
+After deploying ticket 05 with `ANTHROPIC_API_KEY` set, run once inside the
+Bella container:
+
+```bash
+python -m bella.scripts.verify_answer_cache
+```
+
+The script makes two identical Opus answering calls without sending a
+WhatsApp message or printing either the answer or API key. Expect the second
+call to report a positive `read` count followed by:
+
+```text
+OK: repeated answering request read the stable prefix from prompt cache.
+```
+
+If `read=0`, confirm the deployed image contains the current Knowledge Base
+and Enrollment Card and that both calls use `claude-opus-4-8`. Its stable
+prefix is well above that model's 1,024-token minimum cacheable length.
+
 ## Step 7: set the WhatsApp presentation
 
 ```bash

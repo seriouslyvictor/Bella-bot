@@ -13,8 +13,9 @@
 ## O que é o curso
 
 Curso de Aperfeiçoamento Profissional do SENAI-SP, presencial, com 48 horas de
-duração distribuídas em 6 sábados de 8 horas (08h00 às 17h00, com intervalo de
-almoço). A proposta: **desenvolvimento assistido por IA** — aprender a dirigir,
+duração distribuídas em 6 sábados de 8 horas. As datas e os horários exatos
+variam por turma e constam nas informações atuais de inscrição. A proposta:
+**desenvolvimento assistido por IA** — aprender a dirigir,
 testar e melhorar soluções construídas com inteligência artificial generativa,
 transformando ideias em automações, assistentes conversacionais e aplicações
 publicadas.

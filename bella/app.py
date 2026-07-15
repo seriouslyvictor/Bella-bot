@@ -5,10 +5,12 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
+from bella.answer_guard import AllowedUrlGuard
 from bella.config import Settings
 from bella.canned_replies import CannedReplies
+from bella.course_content import CourseContent
 from bella.evolution import EvolutionSender, WhatsAppSender, parse_webhook
-from bella.pipeline import Answerer, Pipeline, PlaceholderAnswerer
+from bella.pipeline import Answerer, Pipeline
 from bella.scope_gate import ScopeGate
 
 logger = logging.getLogger("bella")
@@ -30,11 +32,19 @@ def create_app(
         from bella.anthropic_gate import AnthropicScopeGate
 
         scope_gate = AnthropicScopeGate(api_key=settings.anthropic_api_key)
+    content = CourseContent.from_files(
+        settings.knowledge_base_path, settings.enrollment_card_path
+    )
+    if answerer is None:
+        from bella.anthropic_answerer import AnthropicAnswerer
+
+        answerer = AnthropicAnswerer(settings.anthropic_api_key, content)
     pipeline = Pipeline(
         sender,
         scope_gate,
-        answerer or PlaceholderAnswerer(),
+        answerer,
         CannedReplies.from_yaml(settings.canned_replies_path),
+        AllowedUrlGuard(content.enrollment_url),
     )
     app = FastAPI(title="Bella", docs_url=None, redoc_url=None, openapi_url=None)
 

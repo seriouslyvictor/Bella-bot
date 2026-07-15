@@ -1,25 +1,22 @@
-"""The per-message pipeline: safety checks, then a reply.
+"""The per-message pipeline: safety checks, Scope Gate, then a guarded reply.
 
-The brain is a placeholder for now — the Scope Gate arrives in ticket 04 and
-real answering in ticket 05. This module owns the safety invariants that must
-hold from day one: never reply to ourselves, never reply twice to the same
-delivery, never let a processing error escape (the webhook was already acked).
+This module owns the invariants that must hold from day one: never reply to
+ourselves, never reply twice to the same delivery, and never let a processing
+error escape after the webhook has already been acknowledged.
 """
 
 import logging
 from collections import OrderedDict
-from typing import Protocol
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
+from bella.answer_guard import AllowedUrlGuard
 from bella.canned_replies import CannedReplies
 from bella.evolution import InboundMessage, WhatsAppSender
 from bella.scope_gate import RouteCategory, ScopeGate
 
 logger = logging.getLogger("bella")
-
-SKELETON_REPLY = (
-    "Oi! 👋 Eu sou a Bella, assistente do curso de IA Generativa do SENAI. "
-    "Ainda estou em construção, mas já recebi sua mensagem: “{text}”"
-)
 
 
 class RecentMessageIds:
@@ -40,13 +37,19 @@ class RecentMessageIds:
         return False
 
 
+@dataclass(frozen=True)
+class ConversationTurn:
+    role: Literal["user", "assistant"]
+    text: str
+
+
 class Answerer(Protocol):
-    async def answer(self, text: str, category: RouteCategory) -> str: ...
-
-
-class PlaceholderAnswerer:
-    async def answer(self, text: str, category: RouteCategory) -> str:
-        return SKELETON_REPLY.format(text=text)
+    async def answer(
+        self,
+        text: str,
+        category: RouteCategory,
+        history: Sequence[ConversationTurn] = (),
+    ) -> str: ...
 
 
 class Pipeline:
@@ -56,11 +59,13 @@ class Pipeline:
         scope_gate: ScopeGate,
         answerer: Answerer,
         canned_replies: CannedReplies,
+        answer_guard: AllowedUrlGuard,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
         self._answerer = answerer
         self._canned_replies = canned_replies
+        self._answer_guard = answer_guard
         self._recent = RecentMessageIds()
 
     async def handle(self, message: InboundMessage) -> None:
@@ -99,5 +104,6 @@ class Pipeline:
             reply = self._canned_replies.take_refusal(message.number)
         else:
             reply = await self._answerer.answer(message.text, category)
+            reply = self._answer_guard.apply(reply)
         await self._sender.send_text(message.number, reply)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
