@@ -42,29 +42,54 @@ def create_app(settings: Settings, pipeline: Pipeline) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, str]:
+        """Process liveness; does not make network calls."""
         return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready() -> dict[str, str]:
+        """Readiness to persist an inbound event and send its reply."""
+        try:
+            await pipeline.check_readiness()
+        except Exception as error:
+            # Log only the exception class: connection errors can include
+            # operational details, and a health endpoint must never leak them.
+            logger.warning("readiness check failed (%s)", type(error).__name__)
+            raise HTTPException(
+                status_code=503, detail="dependencies unavailable"
+            ) from error
+        return {"status": "ready"}
 
     @app.get("/assets/whatsapp-profile-picture.png")
     async def profile_picture() -> FileResponse:
         # Evolution GO's set-profile-picture call fetches this URL with a
-        # plain HTTP GET (no header support), so it cannot carry the webhook
-        # secret. Safe to leave open: internal-network-only, and the only
-        # thing served is this one non-sensitive marketing asset.
+        # plain HTTP GET (no header or JSON-body support), so it cannot carry
+        # webhook credentials. Safe to leave open: internal-network-only, and
+        # the only thing served is this one non-sensitive marketing asset.
         return FileResponse(settings.profile_picture_path, media_type="image/png")
 
-    @app.post("/webhook/{secret}")
-    async def webhook(
-        secret: str, request: Request, background: BackgroundTasks
-    ) -> dict[str, str]:
-        # Evolution GO has no webhook signing; the secret lives in the URL we
-        # register on the instance. Constant-time compare, reject outsiders.
-        if not secrets.compare_digest(secret, settings.webhook_secret):
-            raise HTTPException(status_code=403)
-
+    @app.post("/webhook")
+    async def webhook(request: Request, background: BackgroundTasks) -> dict[str, str]:
         try:
             payload: Any = await request.json()
         except Exception:
             payload = None
+
+        # Evolution GO does not sign webhook deliveries, but it includes the
+        # instance token at the top level. Authenticate it before parsing or
+        # scheduling any message work; a non-string value is never a token.
+        supplied_token = (
+            payload.get("instanceToken") if isinstance(payload, dict) else None
+        )
+        candidate = supplied_token if isinstance(supplied_token, str) else ""
+        token_matches = secrets.compare_digest(
+            candidate.encode(), settings.evolution_api_key.encode()
+        )
+        if (
+            not isinstance(supplied_token, str)
+            or not settings.evolution_api_key
+            or not token_matches
+        ):
+            raise HTTPException(status_code=403)
 
         message = parse_webhook(payload)
         if message is not None:

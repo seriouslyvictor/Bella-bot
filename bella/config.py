@@ -22,18 +22,13 @@ def _path_from_env(var: str, default: Path) -> Path:
 
 @dataclass(frozen=True)
 class Settings:
-    # Evolution GO's base URL on the shared Docker network — its container
-    # carries the `evolution-go` alias there, so the short name resolves.
+    # Evolution GO's service URL on the unified Compose network.
     evolution_url: str
     evolution_api_key: str
     evolution_instance_id: str
-    webhook_secret: str
-    # Where Evolution GO reaches Bella on that same network: the `bella` alias
-    # declared in docker-compose.yml (her container name is not stable across
-    # redeploys, the alias is). Required rather than defaulted despite the
-    # value being predictable — it has to agree with that compose alias, and a
-    # mismatch doesn't raise anywhere, it just means webhooks silently never
-    # arrive. Never a public address.
+    # Where Evolution GO reaches Bella on that same network. This must agree
+    # with the `bella` Compose service name; a mismatch makes webhooks silently
+    # disappear. It is never a public address.
     bella_internal_url: str
     anthropic_api_key: str = ""
     database_url: str = ""
@@ -49,7 +44,6 @@ class Settings:
             evolution_url=os.environ["EVOLUTION_URL"],
             evolution_api_key=os.environ["EVOLUTION_API_KEY"],
             evolution_instance_id=os.environ["EVOLUTION_INSTANCE_ID"],
-            webhook_secret=os.environ["WEBHOOK_SECRET"],
             bella_internal_url=os.environ["BELLA_INTERNAL_URL"],
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             database_url=os.environ["BELLA_DATABASE_URL"],

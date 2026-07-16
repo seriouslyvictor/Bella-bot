@@ -2,7 +2,9 @@
 
 import asyncio
 import os
+from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -14,6 +16,12 @@ pytestmark = pytest.mark.skipif(
     DATABASE_URL is None,
     reason="BELLA_TEST_DATABASE_URL is not configured for a disposable Postgres",
 )
+
+
+def run_async(coroutine: Coroutine[Any, Any, None]) -> None:
+    """Use the event loop psycopg supports on Windows as well as Linux."""
+    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+        runner.run(coroutine)
 
 
 def test_postgres_history_and_dedupe_survive_store_restart() -> None:
@@ -50,7 +58,7 @@ def test_postgres_history_and_dedupe_survive_store_restart() -> None:
         finally:
             await restarted_store.close()
 
-    asyncio.run(exercise())
+    run_async(exercise())
 
 
 def test_postgres_retention_deletes_only_idle_conversations() -> None:
@@ -86,4 +94,4 @@ def test_postgres_retention_deletes_only_idle_conversations() -> None:
         finally:
             await store.close()
 
-    asyncio.run(exercise())
+    run_async(exercise())

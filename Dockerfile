@@ -1,44 +1,37 @@
-# Small, non-root image for the FastAPI service. Built via docker-compose.yml
-# (`build: .`), which is the deployment artifact Coolify consumes — not used
-# as a Coolify build pack directly, see docs/deploy.md for why. No secrets are
-# baked in; everything the app and the deploy scripts need comes from
-# environment variables supplied at runtime.
-FROM python:3.12-slim
+# Build stage: install dependencies in a full Python environment.
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28 AS builder
+WORKDIR /build
+COPY requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes --target /build/deps -r requirements.lock
 
+# Runtime stage: minimal final image with app code and dependencies.
+FROM python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
 WORKDIR /app
 
-# Copy the installable unit (pyproject.toml + the bella package itself —
-# setuptools needs both present to build) before anything else, then
-# install. Source-only edits below this line don't bust the dependency layer.
-COPY pyproject.toml ./
-COPY bella ./bella
-RUN pip install --no-cache-dir .
+# Copy pre-installed dependencies from builder.
+COPY --from=builder --chown=1000:1000 /build/deps /usr/local/lib/python3.12/site-packages
 
-# Content and the presentation asset are baked in; the Enrollment Card,
-# Knowledge Base, and canned replies are read at startup (see
-# bella/composition.py). Never copy the *.docx Source Documents — ADR-0001
-# keeps them out of anything the bot or an operator-facing surface can reach,
-# deploy image included.
-COPY content ./content
-COPY whatsapp_profile_picture.png ./
+# Create unprivileged user early; COPY --chown handles subsequent files.
+RUN useradd --create-home --uid 1000 bella
 
-# Pin the asset location rather than letting bella/config.py infer it from
-# __file__ — the inferred path only happens to be right when the app is run
-# as `python -m bella.app` from this WORKDIR.
+# Copy application code and content.
+COPY --chown=1000:1000 bella ./bella
+COPY --chown=1000:1000 content ./content
+COPY --chown=1000:1000 whatsapp_profile_picture.png ./
+
+# Pin asset locations; these must match COPY destinations.
 ENV PROFILE_PICTURE_PATH=/app/whatsapp_profile_picture.png
 ENV CANNED_REPLIES_PATH=/app/content/canned_replies.yaml
 ENV KNOWLEDGE_BASE_PATH=/app/content/knowledge_base.md
 ENV ENROLLMENT_CARD_PATH=/app/content/enrollment_card.yaml
 
-# Runs as an unprivileged user; the process never needs root.
-RUN useradd --create-home --uid 1000 bella && chown -R bella:bella /app
 USER bella
 
 EXPOSE 8000
 
-# Redundant with Coolify's own HTTP healthcheck (wired to GET /health in
-# docs/deploy.md) — this one covers `docker inspect`/plain `docker run`.
+# Matches the Compose dependency-aware readiness check and also covers plain
+# `docker run`/`docker inspect` outside Coolify.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"
+    CMD python -c "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://localhost:8000/ready', timeout=3).status == 200 else 1)"
 
 CMD ["python", "-m", "bella.app"]

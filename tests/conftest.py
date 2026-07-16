@@ -13,20 +13,25 @@ from bella.course_content import CourseContent
 from bella.pipeline import Pipeline
 from bella.scope_gate import RouteCategory
 
-TEST_SECRET = "test-webhook-secret"
+TEST_API_KEY = "test-instance-token"
 
 
 class FakeSender:
     """Records outbound messages instead of calling Evolution GO."""
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, *, unhealthy: bool = False) -> None:
         self.sent: list[tuple[str, str]] = []
         self.fail = fail
+        self.unhealthy = unhealthy
 
     async def send_text(self, number: str, text: str) -> None:
         if self.fail:
             raise RuntimeError("simulated send failure")
         self.sent.append((number, text))
+
+    async def check_health(self) -> None:
+        if self.unhealthy:
+            raise RuntimeError("simulated dependency failure")
 
 
 class FakeScopeGate:
@@ -70,9 +75,8 @@ class FakeAnswerer:
 def make_settings() -> Settings:
     return Settings(
         evolution_url="http://evolution-go:8080",
-        evolution_api_key="unused-in-tests",
+        evolution_api_key=TEST_API_KEY,
         evolution_instance_id="unused-in-tests",
-        webhook_secret=TEST_SECRET,
         bella_internal_url="http://bella:8000",
         anthropic_api_key="unused-in-tests",
     )
@@ -143,7 +147,7 @@ def make_webhook_payload(
             "Message": message,
         },
         "instanceId": "249aad2e-0000-0000-0000-000000000000",
-        "instanceToken": "not-a-real-token",
+        "instanceToken": TEST_API_KEY,
     }
 
 

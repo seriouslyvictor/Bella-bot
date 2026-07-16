@@ -26,6 +26,8 @@ class ConversationStore(Protocol):
 
     async def close(self) -> None: ...
 
+    async def check_health(self) -> None: ...
+
     async def claim_delivery(self, message_id: str) -> bool: ...
 
     async def append_message(
@@ -50,6 +52,9 @@ class InMemoryConversationStore:
         pass
 
     async def close(self) -> None:
+        pass
+
+    async def check_health(self) -> None:
         pass
 
     async def claim_delivery(self, message_id: str) -> bool:
@@ -140,6 +145,12 @@ class PostgresConversationStore:
 
     async def close(self) -> None:
         await self._pool.close()
+
+    async def check_health(self) -> None:
+        # Bound pool acquisition so a readiness probe cannot hang behind a
+        # failed database longer than the container health-check timeout.
+        async with self._pool.connection(timeout=3) as connection:
+            await connection.execute("SELECT 1")
 
     async def claim_delivery(self, message_id: str) -> bool:
         async with self._pool.connection() as connection:

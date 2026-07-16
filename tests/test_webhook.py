@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from bella.scope_gate import RouteCategory
 from bella.conversation_store import InMemoryConversationStore
 from tests.conftest import (
-    TEST_SECRET,
+    TEST_API_KEY,
     FakeAnswerer,
     FakeScopeGate,
     FakeSender,
@@ -19,7 +19,7 @@ from tests.conftest import (
     make_webhook_payload,
 )
 
-WEBHOOK = f"/webhook/{TEST_SECRET}"
+WEBHOOK = "/webhook"
 
 
 def test_text_message_gets_a_reply(client: TestClient, sender: FakeSender) -> None:
@@ -291,12 +291,61 @@ def test_answering_failure_gets_safe_retry_rather_than_silence(
     assert sender.sent == [("5511999999999", canned_replies().error_reply)]
 
 
-def test_wrong_secret_is_rejected_and_nothing_sent(
+def test_wrong_instance_token_is_rejected_and_nothing_sent(
     client: TestClient, sender: FakeSender
 ) -> None:
-    response = client.post("/webhook/wrong-secret", json=make_webhook_payload())
+    payload = make_webhook_payload()
+    payload["instanceToken"] = "wrong-instance-token"
+
+    response = client.post(WEBHOOK, json=payload)
 
     assert response.status_code == 403
+    assert sender.sent == []
+
+
+def test_missing_instance_token_is_rejected_and_nothing_sent(
+    client: TestClient, sender: FakeSender
+) -> None:
+    payload = make_webhook_payload()
+    payload.pop("instanceToken")
+
+    response = client.post(WEBHOOK, json=payload)
+
+    assert response.status_code == 403
+    assert sender.sent == []
+
+
+def test_nested_instance_token_is_rejected_and_nothing_sent(
+    client: TestClient, sender: FakeSender
+) -> None:
+    payload = make_webhook_payload()
+    payload.pop("instanceToken")
+    payload["data"]["instanceToken"] = TEST_API_KEY
+
+    response = client.post(WEBHOOK, json=payload)
+
+    assert response.status_code == 403
+    assert sender.sent == []
+
+
+def test_non_string_instance_token_is_rejected_and_nothing_sent(
+    client: TestClient, sender: FakeSender
+) -> None:
+    payload = make_webhook_payload()
+    payload["instanceToken"] = {"token": TEST_API_KEY}
+
+    response = client.post(WEBHOOK, json=payload)
+
+    assert response.status_code == 403
+    assert sender.sent == []
+
+
+def test_legacy_secret_bearing_webhook_path_does_not_exist(
+    client: TestClient, sender: FakeSender
+) -> None:
+    response = client.post("/webhook/legacy-secret", json=make_webhook_payload())
+
+    assert response.status_code == 404
     assert sender.sent == []
 
 
@@ -364,7 +413,11 @@ def test_non_message_event_is_acked_and_ignored(
 ) -> None:
     response = client.post(
         WEBHOOK,
-        json={"event": "Connection", "data": {"state": "open"}},
+        json={
+            "event": "Connection",
+            "data": {"state": "open"},
+            "instanceToken": TEST_API_KEY,
+        },
     )
 
     assert response.status_code == 200
@@ -399,8 +452,12 @@ def test_send_failure_still_acks_the_webhook(sender: FakeSender) -> None:
 def test_malformed_body_is_acked_and_ignored(
     client: TestClient, sender: FakeSender
 ) -> None:
-    # Evolution retries on non-2xx; garbage must not cause a retry storm.
-    response = client.post(WEBHOOK, json={"unexpected": "shape"})
+    # Evolution retries on non-2xx; an authenticated but unrecognized webhook
+    # shape must not cause a retry storm.
+    response = client.post(
+        WEBHOOK,
+        json={"instanceToken": TEST_API_KEY, "unexpected": "shape"},
+    )
 
     assert response.status_code == 200
     assert sender.sent == []
@@ -411,6 +468,22 @@ def test_health_endpoint(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_readiness_endpoint_checks_dependencies(client: TestClient) -> None:
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+
+
+def test_readiness_endpoint_rejects_a_dead_dependency() -> None:
+    client = make_test_client(FakeSender(unhealthy=True))
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "dependencies unavailable"}
 
 
 def test_profile_picture_asset_is_served(client: TestClient) -> None:

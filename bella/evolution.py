@@ -77,6 +77,8 @@ def _extract_text(message: Any) -> str | None:
 class WhatsAppSender(Protocol):
     async def send_text(self, number: str, text: str) -> None: ...
 
+    async def check_health(self) -> None: ...
+
 
 class EvolutionSender:
     """Sends messages through the Evolution GO HTTP API."""
@@ -98,4 +100,10 @@ class EvolutionSender:
             headers=self._headers,
             json={"number": number, "text": text},
         )
+        response.raise_for_status()
+
+    async def check_health(self) -> None:
+        # /server/ok reflects process availability without requiring an active
+        # Evolution license or exposing either API key in a probe.
+        response = await self._client.get(f"{self._base_url}/server/ok", timeout=3)
         response.raise_for_status()

@@ -2,8 +2,7 @@
 
 These never touch the network: bella.scripts._client.post is monkeypatched
 to a recorder, so the assertions are about URL/payload construction — in
-particular that the webhook secret lands in the path, not the body or a
-header, matching bella/app.py's `/webhook/{secret}` contract.
+particular that registration matches bella/app.py's fixed `/webhook` route.
 
 The _client tests at the bottom are the exception: they drive the real post()
 through a mock transport, because the header it builds is the thing that
@@ -16,7 +15,7 @@ import httpx
 import pytest
 
 from bella.config import Settings
-from bella.scripts import provision_database, register_webhook, set_presentation
+from bella.scripts import register_webhook, set_presentation
 from bella.scripts._client import post
 
 
@@ -43,13 +42,12 @@ def make_settings() -> Settings:
         # global key would 401 here.
         evolution_api_key="the-instance-token",
         evolution_instance_id="unused-in-tests",
-        webhook_secret="s3cr3t",
         bella_internal_url="http://bella:8000",
         bella_display_name="Bella",
     )
 
 
-def test_register_webhook_puts_secret_in_the_path_not_the_body(
+def test_register_webhook_uses_fixed_webhook_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = RecordingPost()
@@ -61,20 +59,18 @@ def test_register_webhook_puts_secret_in_the_path_not_the_body(
     assert len(recorder.calls) == 1
     _, path, body = recorder.calls[0]
     assert path == "/instance/connect"
-    assert body["webhookUrl"] == "http://bella:8000/webhook/s3cr3t"
-    assert "s3cr3t" not in str({k: v for k, v in body.items() if k != "webhookUrl"})
+    assert body["webhookUrl"] == "http://bella:8000/webhook"
 
 
-def test_register_webhook_never_prints_the_secret(
+def test_register_webhook_prints_fixed_webhook_url(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The operator runs this from a Coolify terminal; stdout outlives it.
     monkeypatch.setattr(register_webhook, "post", RecordingPost())
     monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: make_settings()))
 
     register_webhook.main()
 
-    assert "s3cr3t" not in capsys.readouterr().out
+    assert "Registering webhook: http://bella:8000/webhook" in capsys.readouterr().out
 
 
 def test_register_webhook_fails_loudly_when_evolution_disagrees(
@@ -142,10 +138,3 @@ def test_post_still_raises_on_other_http_errors() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         post(make_settings(), "/instance/connect", {}, client=_mock_client(handler))
-
-
-def test_database_provisioning_refuses_an_evolution_database_url() -> None:
-    with pytest.raises(ValueError, match="POSTGRES_ADMIN_URL"):
-        provision_database.require_maintenance_database(
-            "postgresql://postgres:secret@postgres:5432/evolution"
-        )

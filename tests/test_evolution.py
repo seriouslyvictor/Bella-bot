@@ -52,3 +52,23 @@ def test_send_text_raises_on_error_status() -> None:
     except httpx.HTTPStatusError:
         return
     raise AssertionError("expected an HTTPStatusError")
+
+
+def test_health_check_uses_the_unlicensed_server_endpoint() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"status": "ok"})
+
+    sender = EvolutionSender(
+        base_url="http://evolution-go:8080",
+        api_key="the-instance-token",
+        instance_id="an-instance-id",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    asyncio.run(sender.check_health())
+
+    assert str(seen[0].url) == "http://evolution-go:8080/server/ok"
+    assert "apikey" not in seen[0].headers

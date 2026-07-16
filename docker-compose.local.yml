@@ -1,0 +1,14 @@
+# Local-only access overlay. The production file has no host port bindings;
+# this file exposes the same services on loopback for Docker Engine testing.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+  evolution-go:
+    ports:
+      - "127.0.0.1:${EVOLUTION_HOST_PORT:-8080}:8080"
+
+  bella:
+    ports:
+      - "127.0.0.1:${BELLA_HOST_PORT:-8000}:8000"

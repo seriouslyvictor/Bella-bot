@@ -1,350 +1,338 @@
-# Deploying Bella to the VPS (Ticket 03)
+# Unified Docker stack: local Docker Engine and Coolify
 
-This is the owner's runbook — an agent prepared everything below but has no
-VPS or Coolify access and cannot run any of it. Follow the steps in order.
+`docker-compose.yml` is the production deployment artifact. It runs Bella,
+Evolution Go 0.7.1, and PostgreSQL 15 in one Compose project with stable
+service DNS and no VPS-specific external network.
 
-## Architecture decision: Coolify app, Docker Compose build pack
+The production file publishes no host ports. `docker-compose.local.yml` only
+adds loopback bindings for local development; it does not change the images,
+volumes, dependencies, health checks, or internal URLs used on the VPS.
 
-Bella deploys as her own Coolify **application using the Docker Compose build
-pack**, and this repo's `docker-compose.yml` is the deployment artifact. Its
-`networks:` block declares the Evolution stack's network as `external: true`,
-and that declaration alone is what joins her to it.
+## Architecture
 
-**The Dockerfile/Git build pack was tried first and does not work here**, for
-two independent reasons found on the real VPS:
+| Service | Runtime | Internal address | Persistent state |
+|---|---|---|---|
+| `bella` | Built from this repo with a digest-pinned Python base and `requirements.lock` | `http://bella:8000` | `bella` database in `postgres_data` |
+| `evolution-go` | `evoapicloud/evolution-go:0.7.1`, also pinned by manifest digest | `http://evolution-go:8080` | `evogo_auth` and `evogo_users` in `postgres_data` |
+| `postgres` | `postgres:15-alpine`, also pinned by manifest digest | `postgres:5432` | `postgres_data` |
 
-- Coolify's "Connect to Predefined Network" option isn't available for
-  Git-deployed applications, so there's no mechanism to join the Evolution
-  network. Bella landed on the `coolify` network (10.0.1.x) with no route to
-  Evolution GO or Postgres on `ohilulk0h2zy70nhcc536np4` (10.0.2.x).
-- Git-deployed containers are named `<app-uuid>-<deployment-timestamp>` with
-  no stable alias. Since `BELLA_INTERNAL_URL` is baked into Evolution's
-  stored webhook registration, that name changing on every redeploy would
-  silently break inbound messages every time.
+The default bridge network is project-scoped and created by Compose. Postgres
+has no production port binding. Coolify may route an HTTPS domain to
+`evolution-go:8080` for the Manager, activation, and pairing; Bella remains
+internal-only because Evolution posts its webhooks directly to
+`http://bella:8000`.
 
-Moving Evolution+Postgres to the `coolify` network was rejected instead: it
-wouldn't fix Bella's unstable hostname, and it risks recreating containers
-holding a live, paired WhatsApp session. Bella is the disposable side, so
-Bella moves.
+On a new Postgres volume, `deploy/postgres/init-databases.sh` creates isolated
+`bella` and `evolution` login roles and the three databases they own. Bella
+cannot connect to Evolution's databases, and Evolution cannot connect to
+Bella's. This replaces the old manual `provision_database` operator script.
 
-### The hostname question, settled
+Image digests and `requirements.lock` are deliberate deployment inputs. An
+upgrade changes the human-readable tag and digest together, regenerates the
+hash lock with Python 3.12 (`pip-compile --generate-hashes --strip-extras
+--output-file=requirements.lock pyproject.toml`), and repeats the full local
+smoke test before Coolify deploys it.
 
-Short names work. `EVOLUTION_URL=http://evolution-go:8080` and
-`BELLA_INTERNAL_URL=http://bella:8000`. Both are aliases on the shared
-network, and neither contains a uuid or a timestamp.
+## Required configuration
 
-Earlier drafts of this runbook used fully-qualified `<service>-<uuid>` names,
-reasoning from Coolify's documented warning that the predefined-network
-toggle "makes the internal Docker DNS not work as expected". **That warning
-describes a different code path** — the `connect_to_docker_network` setting,
-which only exists for Compose *Services* and never runs for us. Verified
-against Coolify's source (`bootstrap/helpers/parsers.php`,
-`applicationParser` — the parser version 5 that new apps get, per
-`app/Models/Application.php`, `private static $parserVersion = '5'`):
+Copy `.env.example` to `.env` locally. In Coolify, create the same variables
+in the resource's environment panel instead. `.env` is gitignored.
 
-- Our top-level `networks:` block is **preserved verbatim**; Coolify only
-  *adds* its own `<app-uuid>` network alongside it.
-- Our service `aliases:` are **preserved verbatim** (arrays under a service's
-  `networks:` key are copied through untouched).
-- `container_name` **is** force-overridden to `bella-<app-uuid>-<timestamp>`
-  (`generateApplicationContainerName` in `bootstrap/helpers/docker.php`
-  appends `now()->format('Hisu')` — exactly the observed `...-172744767759`,
-  i.e. 17:27:44.767759). We never use that name; the alias is the point.
-- `evolution-go` is an observed alias on the real container:
-  `"Aliases":["evolution-go-ohilulk0h2zy70nhcc536np4","evolution-go"]`.
+| Variable | Purpose |
+|---|---|
+| `POSTGRES_PASSWORD` | Password for the stack-local Postgres administrator. |
+| `BELLA_DB_PASSWORD` | Password for the role restricted to the `bella` database. Use a URL-safe value because it is embedded in Bella's DSN. |
+| `EVOLUTION_DB_PASSWORD` | Password for the role restricted to `evogo_auth` and `evogo_users`. Use a URL-safe value because it is embedded in Evolution's DSNs. |
+| `EVOLUTION_GLOBAL_API_KEY` | Evolution administrative/Manager key. Bella never receives it. |
+| `EVOLUTION_API_KEY` | Token assigned to Bella's Evolution instance. Bella uses it on instance/send/user routes and validates it on inbound webhook payloads. It is not the global key. |
+| `ANTHROPIC_API_KEY` | Claude credential for Bella's Scope Gate and answerer. |
 
-So the durable rule: **address things by network alias, never by container
-name.**
+`EVOLUTION_INSTANCE_ID` can initially keep the documented placeholder.
+Evolution Go 0.7.1 identifies the instance from `EVOLUTION_API_KEY` and ignores
+the `instanceId` header; replace it with the UUID later for operator clarity.
 
-## Step 0: what you're setting up
+The Compose file owns `EVOLUTION_URL`, `BELLA_INTERNAL_URL`, and
+`BELLA_DATABASE_URL`. Do not recreate those in Coolify: their service names
+must remain identical locally and on the VPS.
 
-- A Coolify application built from `docker-compose.yml` via the Docker
-  Compose build pack, with no public domain and no published ports.
-- The compose file joins her to network `ohilulk0h2zy70nhcc536np4`, where
-  Evolution GO and Postgres already live.
-- Two scripts, run once from inside the deployed container, that register
-  Bella's webhook and set her WhatsApp profile picture and display name.
+When migrating the repository's previous `.env`, keep the existing
+`EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_ID`, `ANTHROPIC_API_KEY`, and display
+name. Add the three database passwords and `EVOLUTION_GLOBAL_API_KEY`. Remove
+the old URL/DSN variables, `POSTGRES_ADMIN_URL`, and `WEBHOOK_SECRET`; the new
+stack derives URLs and authenticates webhooks with the instance token.
 
-## Step 1: network facts (already confirmed — no discovery needed)
+Generate each credential independently. These commands print a new value;
+paste it only into `.env` or Coolify:
 
-Network **`ohilulk0h2zy70nhcc536np4`**, observed on the VPS. Evolution GO is
-at `10.0.2.3` with aliases `evolution-go-ohilulk0h2zy70nhcc536np4` and
-`evolution-go`. Postgres is on the same network.
-
-Postgres's hostname is **inferred** to be `postgres:5432` (by the same alias
-rule) — that has *not* been read off a real `docker inspect`. Nothing in this
-ticket connects to Postgres, so the inference costs nothing now. Ticket 06
-must confirm it first:
-
-```bash
-docker ps --format '{{.Names}}' | grep -i postgres
-docker inspect <postgres-container> --format '{{json .NetworkSettings.Networks}}'
+```powershell
+python -c "import secrets; print(secrets.token_hex(32))"
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-## Step 2: create the Coolify application
+Use the hex form for the three database passwords so their DSNs never need
+URL escaping. Use the URL-safe form for new Evolution keys/tokens.
 
-1. New Resource → Application → deploy from this Git repo, the branch you
-   want live.
-2. Build pack: **Docker Compose**. Compose file location: `docker-compose.yml`.
-3. **No domain**, no ports exposed. Bella is only reached by other containers
-   on the internal network.
-4. Leave **Raw Compose Deployment** OFF. It makes Coolify use the file
-   verbatim and skip the `env_file: [.env]` injection that delivers your
-   environment variables into the container.
+### Rotate database passwords on a retained volume
 
-There is no network toggle to set — the compose file's `external: true`
-network does that job. If you go looking for "Connect to Predefined Network",
-you won't find it on an application; that's expected, not a mistake.
-
-## Step 3: environment variables
-
-Set these in Coolify's environment variables panel (mark them
-"secret"/masked if your version offers it). Never put real values in this
-repo. `.env.example` lists the same names as a copy-paste template.
-
-Coolify writes these into a `.env` on the server and auto-injects
-`env_file: [.env]` into the compose file — which is why `docker-compose.yml`
-declares no `env_file` of its own.
-
-| Variable | Value | Notes |
-|---|---|---|
-| `EVOLUTION_API_KEY` | The instance **token** — see "Which Evolution GO credential" below | **Not** `GLOBAL_API_KEY`. This is the one that caused a live 401 |
-| `EVOLUTION_INSTANCE_ID` | The instance UUID | Sent as a header for docs parity; evolution-go ignores it (see below) |
-| `WEBHOOK_SECRET` | Generate fresh: `python -c "import secrets; print(secrets.token_urlsafe(32))"` | Lives in the webhook URL path (`/webhook/<secret>`), not a header — see `bella/app.py` |
-| `EVOLUTION_URL` | `http://evolution-go:8080` | Required. The fully-qualified `http://evolution-go-ohilulk0h2zy70nhcc536np4:8080` is an equally valid alias on this network and is what's currently set — both resolve; no need to change it |
-| `BELLA_INTERNAL_URL` | `http://bella:8000` | The alias declared in `docker-compose.yml`. Required. **Never** Bella's container name — that changes every redeploy |
-| `BELLA_DISPLAY_NAME` | e.g. `Bella` | What `set_presentation.py` sets as the WhatsApp display name |
-| `ANTHROPIC_API_KEY` | Claude API key | Required by the Scope Gate from ticket 04 onward; store as a masked secret |
-| `BELLA_DATABASE_URL` | `postgresql://postgres:<POSTGRES_PASSWORD>@postgres:5432/bella` | Bella's isolated runtime database; the app refuses any database name other than `bella` |
-| `POSTGRES_ADMIN_URL` | `postgresql://postgres:<POSTGRES_PASSWORD>@postgres:5432/postgres` | Needed only for the one-time database provisioning command below; remove it afterward |
-
-Use the Postgres credentials from the Evolution stack without copying them
-into this repository. Before deploying, confirm the real Postgres network
-alias with the `docker inspect` command in Step 1; replace `postgres` in both
-URLs if the observed alias differs.
-
-### Provision Bella's isolated database
-
-After the first image build, open a terminal in Bella's container and run:
-
-```bash
-python -m bella.scripts.provision_database
-```
-
-The command connects only to Postgres's `postgres` maintenance database,
-creates a database named `bella` if needed, and is safe to rerun. It refuses
-an admin URL aimed at an Evolution database. Once it succeeds, remove
-`POSTGRES_ADMIN_URL` from Bella's environment and redeploy; runtime needs only
-`BELLA_DATABASE_URL`. On startup Bella creates her tables inside `bella` and
-will refuse to start if the runtime URL names any other database.
-
-### Which Evolution GO credential
-
-Evolution GO has two credentials and they are not interchangeable. Getting
-this wrong is what produced `401 Unauthorized` from `/instance/connect` on
-the first attempt.
-
-Verified in evolution-go's source (`pkg/routes/routes.go` registers the
-routes; `pkg/middleware/auth_middleware.go` defines both middlewares):
-
-| Routes | Middleware | Credential |
-|---|---|---|
-| `/send/text`, `/instance/connect`, `/instance/status`, `/user/profilePicture`, `/user/profileName`, … | `Auth` | **instance token** |
-| `/instance/create`, `/instance/all`, `/instance/info/:id`, `/instance/delete/:id`, … | `AuthAdmin` | `GLOBAL_API_KEY` |
-
-`Auth` takes the `apikey` header and looks up the instance *by that token*
-(`GetInstanceByToken` → `WHERE token = ?`). It has **no** global-key
-fallback, so `GLOBAL_API_KEY` returns 401 on every route Bella uses.
-`AuthAdmin` compares `apikey` to `GLOBAL_API_KEY` and is only used by routes
-Bella never calls.
-
-**So `EVOLUTION_API_KEY` must hold the instance token.** Note there are two
-`/instance` route groups with *different* middleware — `/instance/connect` is
-in the `Auth` (instance-token) one, which is easy to miss when skimming.
-
-Watch out: the hosted webhook documentation says to call `/instance/connect`
-with `apikey: SUA_GLOBAL_API_KEY` plus an `instanceId` header. **Both halves
-are wrong.** evolution-go reads no header other than `apikey` anywhere in its
-codebase, and evolution-go's own in-repo wiki contradicts the hosted page:
-"Use o `token` que você definiu ao criar a instância, NÃO a `GLOBAL_API_KEY`"
-(`docs/wiki/guias-api/api-instances.md`). Trust the source.
-
-To find the instance token — this call *does* take the global key, since
-`/instance/all` is an `AuthAdmin` route:
-
-```bash
-docker exec <evolution-go-container> \
-  wget -qO- --header="apikey: <GLOBAL_API_KEY>" http://localhost:8080/instance/all
-```
-
-Read the `token` field of your instance from the JSON. `GLOBAL_API_KEY` is in
-the Evolution stack's own environment in Coolify. That response contains
-secrets — don't paste it anywhere shared.
-
-Because `Auth` identifies the instance purely from the token,
-`EVOLUTION_INSTANCE_ID` is not what selects the instance; changing it
-re-targets nothing. It's sent as a header only because the published docs
-specify it. Harmless, and worth keeping in case a later version honours it —
-but don't rely on it meaning anything today.
-
-Unlike the previous Dockerfile-based plan, every value is known up front — no
-placeholder-then-fix-it dance, because the hostname comes from our own
-compose file rather than from whatever Coolify names the container.
-
-## Step 4: health check, restart policy, deploy
-
-Set the HTTP health check to `GET /health` on port 8000 (internal — Coolify
-talks to the container directly). Set the restart policy to restart on
-failure. `docker-compose.yml` also declares a compose-level `healthcheck`,
-and the image ships a `HEALTHCHECK` too, as redundant signals for
-`docker inspect`.
-
-Deploy. Confirm it comes up healthy in Coolify's dashboard.
-
-## Step 5: verify the network path — before touching the live number
-
-This is the check that caught the failed Dockerfile deploy, and it's cheap.
-The Evolution-GO→Bella direction is the one that fails silently.
-
-```bash
-# Bella is actually on the Evolution network (expect an entry for
-# ohilulk0h2zy70nhcc536np4, alias `bella`, on a 10.0.2.x address)
-docker inspect $(docker ps -qf name=bella) --format '{{json .NetworkSettings.Networks}}'
-
-# Bella -> Evolution GO
-docker exec $(docker ps -qf name=bella) python -c "import socket; print(socket.gethostbyname('evolution-go'))"
-
-# Bella -> Postgres (acceptance criterion 2; hostname per Step 1)
-docker exec $(docker ps -qf name=bella) python -c "import socket; print(socket.gethostbyname('postgres'))"
-
-# Evolution GO -> Bella. THE one that silently breaks.
-docker exec <evolution-go-container> wget -qO- http://bella:8000/health
-```
-
-That last command must print `{"status":"ok"}`. If it doesn't, stop — Step 6
-will report success regardless, and you'll be debugging silence on a live
-WhatsApp number.
-
-If you want to prove the path works without a redeploy,
-`docker network connect ohilulk0h2zy70nhcc536np4 <bella-container>` attaches
-a running container by hand. That is a **diagnostic, not the deploy** — it's
-lost on the next redeploy, and it gets you the container name, not the
-`bella` alias. The compose file is what makes it durable.
-
-## Step 6: register the webhook
-
-From Coolify's terminal (or `docker exec -it <bella-container> sh`):
-
-```bash
-python -m bella.scripts.register_webhook
-```
-
-This calls Evolution GO's `POST /instance/connect` with `webhookUrl` set to
-`<BELLA_INTERNAL_URL>/webhook/<WEBHOOK_SECRET>`. **Safe against the
-already-connected, already-paired instance** — it does not re-pair or log out
-the live session. That's not obvious from Evolution GO's hosted docs, which
-describe `/instance/connect` only as the initial pairing call; it was
-confirmed by reading the source (`pkg/instance/service/instance_service.go`,
-`Connect`): when a client is already running it only updates the stored
-webhook URL/subscriptions and syncs them onto the live session, and starts a
-fresh client (the QR/pairing path) only when nothing was running yet.
-
-The script checks Evolution GO's echoed `webhookUrl` against what it sent and
-prints a pass/fail — it deliberately does **not** print the URL, since the
-secret is in the path and this output lands in your terminal scrollback.
-Expect `OK: Evolution GO has the expected webhook URL on file.` A `MISMATCH`
-line exits non-zero.
-
-If this fails with `401 Unauthorized`, `EVOLUTION_API_KEY` holds the wrong
-kind of key — see "Which Evolution GO credential" above. The script says so
-explicitly rather than surfacing a bare HTTP error. Fix the variable and
-redeploy before continuing: the same credential is what Bella replies with,
-so criterion 1 below cannot pass while this is wrong.
-
-Re-run any time `WEBHOOK_SECRET` or `BELLA_INTERNAL_URL` changes. You do
-**not** need to re-run it after an ordinary redeploy — that's the entire
-point of the alias.
-
-### Verify the answering prompt cache (ticket 05)
-
-After deploying ticket 05 with `ANTHROPIC_API_KEY` set, run once inside the
-Bella container:
-
-```bash
-python -m bella.scripts.verify_answer_cache
-```
-
-The script makes two identical Opus answering calls without sending a
-WhatsApp message or printing either the answer or API key. Expect the second
-call to report a positive `read` count followed by:
+The official Postgres initializer runs only for an empty data directory.
+Changing a `*_DB_PASSWORD` or `POSTGRES_PASSWORD` environment value does not
+change the matching role inside an existing cluster. Rotate the database role
+first, then change the environment value during the same maintenance window:
 
 ```text
-OK: repeated answering request read the stable prefix from prompt cache.
+docker compose exec postgres psql -U postgres -d postgres
+\password postgres
+\password bella
+\password evolution
+\q
 ```
 
-If `read=0`, confirm the deployed image contains the current Knowledge Base
-and Enrollment Card and that both calls use `claude-opus-4-8`. Its stable
-prefix is well above that model's 1,024-token minimum cacheable length.
+Each `\password` command prompts without putting the new value in shell or SQL
+history. Update only the corresponding Coolify/`.env` values you rotated, then
+immediately redeploy (or run `docker compose up -d --force-recreate`). Bella
+and Evolution may fail new database connections between the role change and
+the redeploy, so announce a short maintenance window. If values were changed
+in the environment first and the redeployed stack is already unhealthy, run:
 
-## Step 7: set the WhatsApp presentation
+```text
+docker compose exec -T postgres sh /docker-entrypoint-initdb.d/10-init-databases.sh
+```
+
+The idempotent script uses the new container environment and local socket
+authentication to reconcile all three roles, after which the health check can
+recover.
+
+## Run the VPS topology locally
+
+From the repository root in PowerShell:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+# Fill every required blank, or migrate an existing .env as described above.
+
+docker compose -f docker-compose.yml -f docker-compose.local.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build --wait
+docker compose -f docker-compose.yml -f docker-compose.local.yml ps
+```
+
+The overlay binds only to loopback:
+
+- Evolution Manager/API: `http://127.0.0.1:8080`
+- Bella liveness/readiness: `http://127.0.0.1:8000/health` and `/ready`
+- Postgres for integration tests: `127.0.0.1:5432`
+
+Change the three `*_HOST_PORT` variables if a local port is already occupied.
+Internal service addresses never change.
+
+Verify both HTTP services and the database split:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/server/ok
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8000/ready
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec -T postgres psql -U postgres -d postgres -Atc "SELECT datname FROM pg_database WHERE datname IN ('bella','evogo_auth','evogo_users') ORDER BY datname"
+```
+
+`/server/ok` only proves that the Evolution process is healthy. Evolution Go
+0.7.1 returns 503 from business endpoints until its online license has been
+activated, and health does not prove that a WhatsApp instance is paired.
+
+Bella's Postgres integration tests delete their own test records. Create a
+disposable database; never point `BELLA_TEST_DATABASE_URL` at production:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec -T postgres dropdb -U postgres --if-exists bella_test
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec -T postgres createdb -U postgres -O bella bella_test
+$env:BELLA_TEST_DATABASE_URL = "postgresql://bella:PASTE_BELLA_DB_PASSWORD_HERE@127.0.0.1:5432/bella_test"
+pytest
+Remove-Item Env:BELLA_TEST_DATABASE_URL
+```
+
+Stop the stack without deleting state:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.local.yml down
+```
+
+Do not add `--volumes` unless permanent WhatsApp, Evolution, and Bella data is
+intentionally being discarded.
+
+## First-time Evolution setup
+
+For a clean stack:
+
+1. Open `/manager/login` on the local URL or the HTTPS domain routed by
+   Coolify.
+2. Log in with `EVOLUTION_GLOBAL_API_KEY` and complete Evolution Go 0.7.1's
+   license activation flow.
+3. Create the Bella instance. Assign it exactly the token stored in
+   `EVOLUTION_API_KEY`, then pair the WhatsApp number.
+4. If desired, copy the returned UUID into `EVOLUTION_INSTANCE_ID` and
+   redeploy. The token, not this UUID header, selects the instance in 0.7.1.
+5. From a terminal in the running `bella` container, register the internal
+   webhook and set the WhatsApp presentation:
+
+   ```bash
+   python -m bella.scripts.register_webhook
+   python -m bella.scripts.set_presentation
+   ```
+
+`register_webhook` is safe to rerun after ordinary redeploys. It registers the
+fixed internal URL `http://bella:8000/webhook`; `set_presentation` makes
+Evolution fetch the profile image from Bella over the same Compose network.
+
+Evolution Go 0.7.1 has no webhook signature or custom-header setting and logs
+the complete webhook URL on delivery. A secret URL segment would therefore
+leak into its logs. Instead, Bella constant-time validates the top-level
+`instanceToken` that 0.7.1 includes in every event against
+`EVOLUTION_API_KEY`. The fixed webhook path contains no credential and is not
+published by this stack.
+
+## Deploy from GitHub in Coolify
+
+1. Create one Docker Compose resource from this repository and branch.
+2. Select `docker-compose.yml` as the Compose file. Do not include
+   `docker-compose.local.yml`; its only purpose is local loopback access.
+3. Add the required and optional values from `.env.example` in Coolify.
+4. Route an HTTPS domain to port 8080 of `evolution-go` if the Manager must be
+   browser-accessible. Do not add a domain or public port for `postgres` or
+   `bella`.
+5. Deploy and wait for all three Compose health checks. Then complete the
+   activation/pairing steps above and run the two Bella scripts from its
+   Coolify terminal.
+6. Send a real WhatsApp DM, confirm a reply, redeploy once, and repeat the DM
+   to prove the volumes and service DNS survive a normal release.
+
+No network ID, container name, or manual `docker network connect` command is
+part of this design. Coolify may attach its own proxy network in addition to
+the project network; communication within the stack continues to use
+`bella`, `evolution-go`, and `postgres`.
+
+## Existing VPS data: choose before cutover
+
+The new Compose project creates a new `postgres_data` named volume. It does
+not automatically adopt the current Evolution/Postgres resource's volume.
+
+- **Clean cutover (recommended for the first deployment):** deploy an empty
+  stack, activate the Evolution license, create the instance with the retained
+  token, and pair the number again.
+- **State-preserving cutover:** restore logical dumps into a freshly initialized
+  new cluster using the procedure below. With `POSTGRES_AUTH_DB` configured,
+  Evolution Go 0.7.1 stores the paired WhatsApp session in Postgres rather than
+  `/app/dbdata`.
+
+Never copy an old Postgres data directory directly into the new named volume.
+The initialization script runs only for an empty cluster, and a raw directory
+copy can skip the new roles/ownership or be inconsistent with a running server.
+
+### State-preserving cutover runbook
+
+Run this once against disposable local copies first. Replace the old stack's
+service/container names where they differ.
+
+1. Record the old Evolution version, license status, global key, instance UUID,
+   instance token, paired number, and webhook. Schedule a maintenance window.
+2. Quiesce all writers on the old stack: stop Bella, disconnect inbound traffic,
+   and stop Evolution while leaving its Postgres running. Create custom-format,
+   owner-free dumps of `evogo_auth`, `evogo_users`, and `bella` when present:
+
+   ```bash
+   mkdir -p backups
+   docker compose exec -T postgres pg_dump -U postgres -Fc --no-owner --no-acl -f /tmp/evogo_auth.dump evogo_auth
+   docker compose exec -T postgres pg_dump -U postgres -Fc --no-owner --no-acl -f /tmp/evogo_users.dump evogo_users
+   docker compose exec -T postgres pg_dump -U postgres -Fc --no-owner --no-acl -f /tmp/bella.dump bella
+   docker compose cp postgres:/tmp/evogo_auth.dump backups/evogo_auth.dump
+   docker compose cp postgres:/tmp/evogo_users.dump backups/evogo_users.dump
+   docker compose cp postgres:/tmp/bella.dump backups/bella.dump
+   sha256sum backups/*.dump
+   ```
+
+   Omit the `bella` dump/copy/restore commands if that database did not exist
+   in the old stack.
+
+3. Create the new Coolify Compose resource with **no domain assigned yet** and
+   all new database passwords set. Deploy once so the empty volume initializer
+   creates the roles/databases, then stop `bella` and `evolution-go` from the
+   resource controls while keeping `postgres` running. With direct Compose
+   access, the equivalent preparation is `docker compose up -d --wait postgres`.
+4. Copy the verified dumps into the new Postgres container and restore them as
+   their intended owners. `--clean --if-exists` removes the schemas briefly
+   created during the first boot:
+
+   ```bash
+   docker compose cp backups/evogo_auth.dump postgres:/tmp/evogo_auth.dump
+   docker compose cp backups/evogo_users.dump postgres:/tmp/evogo_users.dump
+   docker compose cp backups/bella.dump postgres:/tmp/bella.dump
+   docker compose exec -T postgres pg_restore -U postgres --exit-on-error --clean --if-exists --no-owner --no-acl --role=evolution -d evogo_auth /tmp/evogo_auth.dump
+   docker compose exec -T postgres pg_restore -U postgres --exit-on-error --clean --if-exists --no-owner --no-acl --role=evolution -d evogo_users /tmp/evogo_users.dump
+   docker compose exec -T postgres pg_restore -U postgres --exit-on-error --clean --if-exists --no-owner --no-acl --role=bella -d bella /tmp/bella.dump
+   ```
+
+5. Reapply the database `OWNER`, `CONNECT`, and `TEMPORARY` statements from
+   `deploy/postgres/init-databases.sh`, then verify owners and access before
+   starting either application:
+
+   ```bash
+   docker compose exec -T postgres sh /docker-entrypoint-initdb.d/10-init-databases.sh
+   docker compose exec -T postgres psql -U postgres -d postgres -Atc "SELECT datname || ':' || pg_get_userbyid(datdba) FROM pg_database WHERE datname IN ('bella','evogo_auth','evogo_users') ORDER BY datname"
+   docker compose exec -T postgres psql -U postgres -d postgres -Atc "SELECT has_database_privilege('bella','evogo_auth','CONNECT'), has_database_privilege('evolution','bella','CONNECT')"
+   ```
+
+   Expected owners are `bella:bella`, `evogo_auth:evolution`, and
+   `evogo_users:evolution`; both privilege checks must be `f`.
+6. Start Evolution first. Confirm `/server/ok`, license status, retained
+   instance, and pairing before starting Bella. Register the fixed webhook,
+   run the presentation script, then assign the Manager domain and send a real
+   DM in both directions. With direct Compose access, use
+   `docker compose up -d --wait evolution-go` followed by
+   `docker compose up -d --wait bella` after those Evolution checks pass.
+7. Roll back on any owner, license, pairing, or messaging failure: stop the new
+   application containers, restore inbound traffic to the untouched old stack,
+   and retain the new volume and dumps for diagnosis.
+
+Do not remove the old Coolify resource or its volumes until the new stack has
+passed the message test after a redeploy and a restore drill has succeeded.
+
+## Operational checks
 
 ```bash
-python -m bella.scripts.set_presentation
+docker compose ps
+docker compose exec -T evolution-go wget -qO- http://127.0.0.1:8080/server/ok
+docker compose exec -T bella python -c "import socket; print(socket.gethostbyname('evolution-go')); print(socket.gethostbyname('postgres'))"
+docker compose exec -T evolution-go wget -qO- http://bella:8000/ready
+docker compose exec -T postgres pg_isready -U postgres -d bella
 ```
 
-Sets the profile picture — Evolution GO fetches it itself, over plain HTTP,
-from `<BELLA_INTERNAL_URL>/assets/whatsapp-profile-picture.png`, a route
-`bella/app.py` serves unauthenticated on purpose because Evolution GO's fetch
-can't carry a header — and the display name from `BELLA_DISPLAY_NAME`.
-Depends on Step 5's Evolution-GO→Bella check having passed.
+Bella exposes two different signals: `/health` is process liveness, while
+`/ready` verifies a real Postgres query and Evolution's `/server/ok`. The
+container health check uses `/ready`. Docker's `restart: unless-stopped`
+restarts a process that exits; Docker and Coolify do **not** restart a process
+merely because its health status becomes `unhealthy`. Enable Coolify alerts for
+unhealthy services and investigate/restart them after fixing the dependency.
 
-## Step 8: verify every acceptance criterion
+Evolution Go 0.7.1 has an upstream NATS-disable bug: even with an empty
+`NATS_URL` and `NATS_GLOBAL_ENABLED=false`, its producer constructor attempts
+one connection and logs `Failed to connect to NATS`. This stack does not use
+NATS; that startup line (and possible `NATS connection is nil` event warnings)
+is expected and does not make `/server/ok` fail. The license-required banner is
+also expected until the first activation. Other startup errors are not normal.
 
-1. **A text DM to Bella's real number gets the skeleton reply, served from
-   the VPS.** Message the connected number from any phone; expect the
-   ticket-02 echo reply within a few seconds. This exercises
-   `EVOLUTION_API_KEY` a second way — Bella's reply goes out via `/send/text`,
-   which needs the same instance token `/instance/connect` did. If Step 6
-   succeeded, this half is already proven; if the reply never arrives, check
-   Bella's logs for a 401 from `/send/text` before suspecting the webhook.
-2. **The container reaches Postgres and Evolution GO over the internal
-   network; no new published ports for Postgres.** Reachability is Step 5.
-   The no-published-port half is a separate question — being on a shared
-   network says nothing about host port exposure — so confirm explicitly:
-   `docker port <postgres-container>` should print nothing.
-3. **Health endpoint reports healthy; Coolify restarts on failure.** Coolify
-   shows the app healthy. To actually exercise the restart policy rather than
-   trust it's configured, temporarily point the health check at a bogus path,
-   watch it flip unhealthy and restart, then restore it.
-4. **Bella's WhatsApp profile shows the picture and display name.** Open a
-   chat with her number on a phone and check the contact info.
-5. **No secret appears in the repo or image.** True by construction: the
-   Dockerfile never `COPY`s `.env` (it's `.dockerignore`d), and every secret
-   is read from the environment at runtime via `Settings.from_env()`. To
-   check the image: `docker run --rm <image> env | grep -iE 'key|secret|token'`
-   should print nothing.
+## Backups and restore drills
 
-**Then redeploy once and re-run Step 5 and criterion 1.** The whole design
-rests on Bella staying reachable at `bella` across redeploys, and that's
-precisely what the Dockerfile route got wrong. The failure is invisible until
-someone messages her, so prove it once, deliberately.
+`postgres_data` contains Evolution's instance and WhatsApp authentication
+state, its license runtime state, and Bella's only conversation history. Use
+logical Postgres backups rather than copying a live Docker volume:
 
-## Known unverified assumptions
+- dump all three application databases in custom format with `--no-owner`
+  and `--no-acl` (the cutover commands above are the reference commands);
+- send checksummed, encrypted copies to storage outside the VPS;
+- keep a documented retention policy (a reasonable starting point is 7 daily,
+  4 weekly, and 12 monthly sets) and monitor the backup job;
+- before cutovers/upgrades, stop Bella and Evolution so the three dumps share a
+  quiet point in time;
+- at least monthly, restore the newest set into a disposable local stack,
+  verify owners/ACLs, start all services, and confirm Evolution still sees the
+  retained instance before deleting the drill volume.
 
-- **Postgres's hostname** — network confirmed, `postgres` alias inferred from
-  the alias rule rather than observed. Costs nothing here; ticket 06 must
-  confirm.
-- **Coolify's exact UI labels** for the build pack, health check, and Raw
-  Compose Deployment, which move between versions.
-- Everything about the compose transformation is read from Coolify's source
-  at a point in time. If Coolify is upgraded and Bella stops receiving
-  messages after a redeploy, suspect the alias handling first and re-check
-  `applicationParser` in `bootstrap/helpers/parsers.php`.
-
-## What's deliberately not here
-
-- No Postgres schema or connection-string wiring — that's ticket 06. This
-  ticket only needs the network path to exist.
-- No volume-mount story for `content/*.yaml`; it's baked into the image at
-  build time. Revisit if editing the Enrollment Card without a rebuild
-  becomes a real need — out of scope, since no code reads those files yet.
+A normal redeploy recreates containers without recreating `postgres_data`.
+Deleting that volume is a data-loss operation, not a routine deployment step.

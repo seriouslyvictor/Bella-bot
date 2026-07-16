@@ -6,6 +6,7 @@ reply, and never let a processing error escape after the webhook has already
 been acknowledged.
 """
 
+import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -80,6 +81,16 @@ class Pipeline:
 
     async def close(self) -> None:
         await self._conversation_store.close()
+
+    async def check_readiness(self) -> None:
+        # Both local dependencies are required to accept a webhook: Postgres
+        # claims the delivery first, then Evolution sends the reply. Probe in
+        # parallel and cap the whole check below Docker's five-second timeout.
+        async with asyncio.timeout(4):
+            await asyncio.gather(
+                self._conversation_store.check_health(),
+                self._sender.check_health(),
+            )
 
     async def run_retention(self) -> None:
         await run_retention_job(self._conversation_store)

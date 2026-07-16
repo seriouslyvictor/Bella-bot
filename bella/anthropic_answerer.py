@@ -1,4 +1,4 @@
-"""Claude Opus answers grounded in Bella's public course content."""
+"""Claude Sonnet answers grounded in Bella's public course content."""
 
 import logging
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from bella.scope_gate import RouteCategory
 
 logger = logging.getLogger("bella")
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-sonnet-5"
 MAX_TOKENS = 700
 TIMEOUT = 45
 
@@ -77,6 +77,9 @@ class AnthropicAnswerer:
         response = await self._client.with_options(timeout=TIMEOUT).messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
+            # Sonnet 5 runs adaptive thinking when this is omitted, which would add
+            # latency and spend part of MAX_TOKENS before any reply text.
+            thinking={"type": "disabled"},
             system=self._system,
             messages=messages,
         )
