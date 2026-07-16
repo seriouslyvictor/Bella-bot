@@ -58,6 +58,23 @@ def test_application_database_roles_are_isolated_by_compose_contract() -> None:
     assert bella_environment["BELLA_INTERNAL_URL"] == "http://bella:8000"
 
 
+def test_remaining_feature_configuration_is_exposed_to_bella() -> None:
+    bella = _load_compose("docker-compose.yml")["services"]["bella"]
+    environment = bella["environment"]
+
+    assert environment["ADMIN_CONTACT"].startswith("${ADMIN_CONTACT:")
+    assert environment["APOSTILA_PATH"] == (
+        "${APOSTILA_PATH:-/app/content/apostila.pdf}"
+    )
+    assert environment["RATE_LIMIT_MAX_MESSAGES"] == (
+        "${RATE_LIMIT_MAX_MESSAGES:-10}"
+    )
+    assert environment["RATE_LIMIT_WINDOW_SECONDS"] == (
+        "${RATE_LIMIT_WINDOW_SECONDS:-60}"
+    )
+    assert "./content:/app/content:ro" in bella["volumes"]
+
+
 def test_local_overlay_only_publishes_loopback_ports() -> None:
     services = _load_compose("docker-compose.local.yml")["services"]
 

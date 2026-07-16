@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from bella.rate_limit import RateLimitPolicy
+
 # Only the fallbacks for a source checkout — the image pins every one of these
 # explicitly (see Dockerfile), because inferring the root from __file__ silently
 # resolves into site-packages when the package is imported from an install
@@ -14,6 +16,7 @@ DEFAULT_PROFILE_PICTURE_PATH = _REPO_ROOT / "whatsapp_profile_picture.png"
 DEFAULT_CANNED_REPLIES_PATH = _CONTENT_DIR / "canned_replies.yaml"
 DEFAULT_KNOWLEDGE_BASE_PATH = _CONTENT_DIR / "knowledge_base.md"
 DEFAULT_ENROLLMENT_CARD_PATH = _CONTENT_DIR / "enrollment_card.yaml"
+DEFAULT_APOSTILA_PATH = _CONTENT_DIR / "apostila.pdf"
 
 
 def _path_from_env(var: str, default: Path) -> Path:
@@ -32,11 +35,14 @@ class Settings:
     bella_internal_url: str
     anthropic_api_key: str = ""
     database_url: str = ""
+    admin_contact: str = ""
     bella_display_name: str = "Bella"
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH
     canned_replies_path: Path = DEFAULT_CANNED_REPLIES_PATH
     knowledge_base_path: Path = DEFAULT_KNOWLEDGE_BASE_PATH
     enrollment_card_path: Path = DEFAULT_ENROLLMENT_CARD_PATH
+    apostila_path: Path = DEFAULT_APOSTILA_PATH
+    rate_limit_policy: RateLimitPolicy = RateLimitPolicy()
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -47,6 +53,7 @@ class Settings:
             bella_internal_url=os.environ["BELLA_INTERNAL_URL"],
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             database_url=os.environ["BELLA_DATABASE_URL"],
+            admin_contact=os.environ["ADMIN_CONTACT"],
             bella_display_name=os.environ.get("BELLA_DISPLAY_NAME", "Bella"),
             profile_picture_path=_path_from_env(
                 "PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH
@@ -59,5 +66,12 @@ class Settings:
             ),
             enrollment_card_path=_path_from_env(
                 "ENROLLMENT_CARD_PATH", DEFAULT_ENROLLMENT_CARD_PATH
+            ),
+            apostila_path=_path_from_env("APOSTILA_PATH", DEFAULT_APOSTILA_PATH),
+            rate_limit_policy=RateLimitPolicy(
+                max_messages=int(os.environ.get("RATE_LIMIT_MAX_MESSAGES", "10")),
+                window_seconds=int(
+                    os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60")
+                ),
             ),
         )

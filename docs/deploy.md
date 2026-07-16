@@ -46,6 +46,7 @@ in the resource's environment panel instead. `.env` is gitignored.
 | `EVOLUTION_GLOBAL_API_KEY` | Evolution administrative/Manager key. Bella never receives it. |
 | `EVOLUTION_API_KEY` | Token assigned to Bella's Evolution instance. Bella uses it on instance/send/user routes and validates it on inbound webhook payloads. It is not the global key. |
 | `ANTHROPIC_API_KEY` | Claude credential for Bella's Scope Gate and answerer. |
+| `ADMIN_CONTACT` | Owner WhatsApp number that receives handoff notifications. |
 
 `EVOLUTION_INSTANCE_ID` can initially keep the documented placeholder.
 Evolution Go 0.7.1 identifies the instance from `EVOLUTION_API_KEY` and ignores
@@ -54,6 +55,13 @@ the `instanceId` header; replace it with the UUID later for operator clarity.
 The Compose file owns `EVOLUTION_URL`, `BELLA_INTERNAL_URL`, and
 `BELLA_DATABASE_URL`. Do not recreate those in Coolify: their service names
 must remain identical locally and on the VPS.
+
+Bella reads editable assets from the read-only `./content:/app/content` bind
+mount. `APOSTILA_PATH` defaults to `/app/content/apostila.pdf`; adding or
+replacing that host file changes the next apostila request without rebuilding
+the image. `RATE_LIMIT_MAX_MESSAGES` and `RATE_LIMIT_WINDOW_SECONDS` configure
+the per-number sliding window, and the canned cap/media texts remain editable
+in `content/canned_replies.yaml`.
 
 When migrating the repository's previous `.env`, keep the existing
 `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_ID`, `ANTHROPIC_API_KEY`, and display

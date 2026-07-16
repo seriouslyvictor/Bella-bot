@@ -87,7 +87,14 @@ services:
       # retains this header for compatibility, but the value is not consulted.
       EVOLUTION_INSTANCE_ID: ${EVOLUTION_INSTANCE_ID:-unused-by-evolution-go-0.7.1}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}
+      ADMIN_CONTACT: ${ADMIN_CONTACT:?Set ADMIN_CONTACT to the owner WhatsApp number}
       BELLA_DISPLAY_NAME: ${BELLA_DISPLAY_NAME:-Bella}
+      APOSTILA_PATH: ${APOSTILA_PATH:-/app/content/apostila.pdf}
+      RATE_LIMIT_MAX_MESSAGES: ${RATE_LIMIT_MAX_MESSAGES:-10}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+    volumes:
+      # A bind mount makes a later PDF drop visible without rebuilding Bella.
+      - ./content:/app/content:ro
     expose:
       - "8000"
     depends_on:

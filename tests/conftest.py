@@ -1,5 +1,7 @@
 import functools
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -10,7 +12,8 @@ from bella.canned_replies import CannedReplies
 from bella.config import Settings
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
 from bella.course_content import CourseContent
-from bella.pipeline import Pipeline
+from bella.pipeline import AnswerResult, Pipeline
+from bella.rate_limit import RateLimitPolicy
 from bella.scope_gate import RouteCategory
 
 TEST_API_KEY = "test-instance-token"
@@ -19,15 +22,30 @@ TEST_API_KEY = "test-instance-token"
 class FakeSender:
     """Records outbound messages instead of calling Evolution GO."""
 
-    def __init__(self, fail: bool = False, *, unhealthy: bool = False) -> None:
+    def __init__(
+        self,
+        fail: bool = False,
+        *,
+        fail_document: bool = False,
+        fail_numbers: set[str] | None = None,
+        unhealthy: bool = False,
+    ) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.sent_documents: list[tuple[str, Path, str]] = []
         self.fail = fail
+        self.fail_document = fail_document
+        self.fail_numbers = fail_numbers or set()
         self.unhealthy = unhealthy
 
     async def send_text(self, number: str, text: str) -> None:
-        if self.fail:
+        if self.fail or number in self.fail_numbers:
             raise RuntimeError("simulated send failure")
         self.sent.append((number, text))
+
+    async def send_document(self, number: str, path: Path, caption: str) -> None:
+        if self.fail_document:
+            raise RuntimeError("simulated document send failure")
+        self.sent_documents.append((number, path, caption))
 
     async def check_health(self) -> None:
         if self.unhealthy:
@@ -53,23 +71,33 @@ class FakeScopeGate:
 
 
 class FakeAnswerer:
-    def __init__(self, response: str | None = None, *, fail: bool = False) -> None:
+    def __init__(
+        self,
+        response: str | None = None,
+        *,
+        fail: bool = False,
+        needs_handoff: bool = False,
+    ) -> None:
         self.seen: list[tuple[str, RouteCategory]] = []
         self.histories: list[list[ConversationMessage]] = []
         self.response = response
         self.fail = fail
+        self.needs_handoff = needs_handoff
 
     async def answer(
         self,
         text: str,
         category: RouteCategory,
         history: Sequence[ConversationMessage],
-    ) -> str:
+    ) -> AnswerResult:
         self.seen.append((text, category))
         self.histories.append(list(history))
         if self.fail:
             raise RuntimeError("simulated answering failure")
-        return self.response or f"placeholder answer: {text}"
+        return AnswerResult(
+            self.response or f"placeholder answer: {text}",
+            needs_handoff=self.needs_handoff,
+        )
 
 
 def make_settings() -> Settings:
@@ -103,6 +131,11 @@ def make_test_client(
     scope_gate: FakeScopeGate | None = None,
     answerer: FakeAnswerer | None = None,
     conversation_store: InMemoryConversationStore | None = None,
+    apostila_path: Path | None = None,
+    admin_contact: str = "",
+    rate_limit_max_messages: int = 10,
+    rate_limit_window_seconds: int = 60,
+    rate_limit_clock: Callable[[], float] | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     pipeline = Pipeline(
@@ -112,6 +145,11 @@ def make_test_client(
         canned_replies(),
         course_content().enrollment_url,
         conversation_store or InMemoryConversationStore(),
+        apostila_path or make_settings().apostila_path,
+        course_content().human_contact_reply,
+        admin_contact,
+        RateLimitPolicy(rate_limit_max_messages, rate_limit_window_seconds),
+        rate_limit_clock or monotonic,
     )
     app = create_app(make_settings(), pipeline)
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)

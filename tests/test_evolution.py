@@ -8,6 +8,7 @@ replying, not just the deploy scripts.
 """
 
 import asyncio
+from pathlib import Path
 
 import httpx
 
@@ -52,6 +53,32 @@ def test_send_text_raises_on_error_status() -> None:
     except httpx.HTTPStatusError:
         return
     raise AssertionError("expected an HTTPStatusError")
+
+
+def test_send_document_uses_evolution_go_071_media_contract(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"message": "success"})
+
+    document = tmp_path / "apostila.pdf"
+    document.write_bytes(b"%PDF-1.7 test")
+    sender = EvolutionSender(
+        base_url="http://evolution-go:8080",
+        api_key="the-instance-token",
+        instance_id="an-instance-id",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    asyncio.run(sender.send_document("5511999999999", document, "Boa leitura!"))
+
+    assert str(seen[0].url) == "http://evolution-go:8080/send/media"
+    assert seen[0].headers["apikey"] == "the-instance-token"
+    assert seen[0].read().decode() == (
+        '{"number":"5511999999999","url":"JVBERi0xLjcgdGVzdA==",'
+        '"type":"document","caption":"Boa leitura!","filename":"apostila.pdf"}'
+    )
 
 
 def test_health_check_uses_the_unlicensed_server_endpoint() -> None:

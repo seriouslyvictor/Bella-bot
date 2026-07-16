@@ -46,6 +46,59 @@ rate_limit_reply: >-
   Opa, muitas mensagens de uma vez! 😅 Me dá um minutinho e continuamos a
   conversa, combinado?
 
+human_contact_intro: "Contato humano:"
+
+apostila_soon_reply: >-
+  A apostila ainda esta sendo finalizada e vai estar disponivel em breve.
+  Enquanto isso, pode me perguntar sobre o conteudo que eu te ajudo por aqui!
+
+apostila_caption: >-
+  Aqui esta a apostila do curso! Espero que aproveite a leitura.
+
+apostila_error_reply: >-
+  Desculpe, nao consegui enviar a apostila agora. Pode tentar novamente em
+  alguns instantes? Enquanto isso, posso responder suas duvidas sobre o conteudo.
+
+translations:
+  en:
+    media_reply: >-
+      For now I can only understand text messages. Please type your question!
+      The course itself is taught in Portuguese.
+    rate_limit_reply: >-
+      That's a lot of messages at once! Give me a minute and we can continue.
+      The course itself is taught in Portuguese.
+    error_reply: >-
+      I had a technical problem on my side. Please try again in a moment.
+    apostila_soon_reply: >-
+      The workbook is still being finalized and will be available soon. In the
+      meantime, ask me anything about its content. The course is taught in Portuguese.
+    apostila_caption: >-
+      Here is the course workbook! The course itself is taught in Portuguese.
+    apostila_error_reply: >-
+      Sorry, I could not send the workbook right now. Please try again shortly.
+      The course itself is taught in Portuguese.
+    human_contact_intro: >-
+      Of course! Here is the human contact. The course is taught in Portuguese:
+  es:
+    media_reply: >-
+      Por ahora solo entiendo mensajes de texto. Escribe tu pregunta, por favor.
+      El curso se imparte en portugues.
+    rate_limit_reply: >-
+      Son muchos mensajes a la vez. Dame un minuto y continuamos. El curso se
+      imparte en portugues.
+    error_reply: >-
+      Tuve un problema tecnico. Intentalo de nuevo en unos instantes.
+    apostila_soon_reply: >-
+      El cuaderno todavia se esta finalizando y estara disponible pronto.
+      Mientras tanto, preguntame por su contenido. El curso se imparte en portugues.
+    apostila_caption: >-
+      Aqui tienes el cuaderno del curso. El curso se imparte en portugues.
+    apostila_error_reply: >-
+      Lo siento, no pude enviar el cuaderno ahora. Intentalo de nuevo en breve.
+      El curso se imparte en portugues.
+    human_contact_intro: >-
+      Claro. Este es el contacto humano. El curso se imparte en portugues:
+
 error_reply: >-
   Tive um probleminha técnico aqui do meu lado 🙈 Pode enviar sua mensagem de
   novo em instantes?

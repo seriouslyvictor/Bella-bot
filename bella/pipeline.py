@@ -9,8 +9,11 @@ been acknowledged.
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
 from bella.answer_guard import strip_foreign_urls
@@ -20,6 +23,12 @@ from bella.conversation_store import (
     ConversationStore,
 )
 from bella.evolution import InboundMessage, WhatsAppSender
+from bella.rate_limit import (
+    RateLimitDecision,
+    RateLimitPolicy,
+    SlidingWindowRateLimiter,
+)
+from bella.reply_language import ReplyLanguage, detect_reply_language
 from bella.retention import run_retention_job
 from bella.scope_gate import RouteCategory, ScopeGate
 
@@ -49,13 +58,36 @@ class RefusalRotation:
         return self._refusals[index % len(self._refusals)]
 
 
+@dataclass(frozen=True)
+class AnswerResult:
+    text: str
+    needs_handoff: bool = False
+
+
 class Answerer(Protocol):
     async def answer(
         self,
         text: str,
         category: RouteCategory,
         history: Sequence[ConversationMessage],
-    ) -> str: ...
+    ) -> AnswerResult: ...
+
+
+@dataclass(frozen=True)
+class ReplyPlan:
+    history_text: str
+    outbound_text: str | None
+    handoff_summary: str | None = None
+
+    @classmethod
+    def text(
+        cls, text: str, *, handoff_summary: str | None = None
+    ) -> "ReplyPlan":
+        return cls(text, text, handoff_summary)
+
+    @classmethod
+    def document(cls, caption: str) -> "ReplyPlan":
+        return cls(caption, None)
 
 
 class Pipeline:
@@ -67,6 +99,11 @@ class Pipeline:
         canned_replies: CannedReplies,
         enrollment_url: str,
         conversation_store: ConversationStore,
+        apostila_path: Path,
+        human_contact_reply: str,
+        admin_contact: str,
+        rate_limit_policy: RateLimitPolicy,
+        rate_limit_clock: Callable[[], float] = monotonic,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
@@ -74,7 +111,16 @@ class Pipeline:
         self._canned_replies = canned_replies
         self._enrollment_url = enrollment_url
         self._conversation_store = conversation_store
+        self._apostila_path = apostila_path
+        self._human_contact_reply = human_contact_reply
+        self._admin_contact = "".join(
+            character for character in admin_contact if character.isdigit()
+        )
         self._refusals = RefusalRotation(canned_replies.refusals)
+        self._rate_limiter = SlidingWindowRateLimiter(
+            rate_limit_policy,
+            rate_limit_clock,
+        )
 
     async def start(self) -> None:
         await self._conversation_store.start()
@@ -112,11 +158,27 @@ class Pipeline:
         if not await self._conversation_store.claim_delivery(message.message_id):
             logger.info("duplicate delivery ignored: %s", message.message_id)
             return
+        language = detect_reply_language(message.text)
+        rate_limit = self._rate_limiter.check(message.number)
+        if rate_limit is RateLimitDecision.SILENCE:
+            logger.info("rate-limited message silenced: %s", message.message_id)
+            return
+        if rate_limit is RateLimitDecision.NOTIFY:
+            await self._sender.send_text(
+                message.number,
+                self._canned_replies.reply("rate_limit_reply", language),
+            )
+            logger.info("rate-limit notice sent: %s", message.message_id)
+            return
         if message.text is None:
             logger.info(
-                "non-text message ignored: %s (type=%s)",
+                "non-text message receives canned reply: %s (type=%s)",
                 message.message_id,
                 message.message_type,
+            )
+            await self._sender.send_text(
+                message.number,
+                self._canned_replies.reply("media_reply", language),
             )
             return
 
@@ -126,27 +188,84 @@ class Pipeline:
             ConversationMessage("user", message.text, datetime.now(UTC)),
         )
         try:
-            reply = await self._reply_for(message.text, message.number, history)
+            plan = await self._reply_for(
+                message.text,
+                message.number,
+                history,
+                language,
+            )
         except Exception:
             # Guards the whole reply-producing step, not just one stage of it:
             # every stage added here must degrade to a reply, never to silence.
             logger.exception("reply production failed for %s", message.message_id)
-            reply = self._canned_replies.error_reply
-        await self._sender.send_text(message.number, reply)
+            plan = ReplyPlan.text(
+                self._canned_replies.reply("error_reply", language)
+            )
+        if plan.outbound_text is not None:
+            await self._sender.send_text(message.number, plan.outbound_text)
         await self._conversation_store.append_message(
             message.number,
-            ConversationMessage("assistant", reply, datetime.now(UTC)),
+            ConversationMessage("assistant", plan.history_text, datetime.now(UTC)),
         )
+        if plan.handoff_summary is not None:
+            await self._notify_admin(message.number, plan.handoff_summary)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
+
+    async def _notify_admin(self, user_number: str, summary: str) -> None:
+        if not self._admin_contact or user_number == self._admin_contact:
+            return
+        notification = (
+            "Handoff Bella\n"
+            f"Usuario: {user_number}\n"
+            f"Pedido: {summary[:500]}"
+        )
+        try:
+            await self._sender.send_text(self._admin_contact, notification)
+        except Exception:
+            logger.exception("failed to notify admin about %s", user_number)
 
     async def _reply_for(
         self,
         text: str,
         number: str,
         history: Sequence[ConversationMessage],
-    ) -> str:
+        language: ReplyLanguage,
+    ) -> ReplyPlan:
         category = await self._scope_gate.classify(text)
         if category is RouteCategory.OUT_OF_SCOPE:
-            return self._refusals.take(number)
+            return ReplyPlan.text(self._refusals.take(number))
+        if category is RouteCategory.HUMAN_REQUESTED:
+            contact = self._human_contact_reply
+            if language is not ReplyLanguage.PORTUGUESE:
+                intro = self._canned_replies.reply("human_contact_intro", language)
+                contact = f"{intro}\n{contact}"
+            return ReplyPlan.text(contact, handoff_summary=text)
+        if category is RouteCategory.APOSTILA_REQUEST:
+            if not self._apostila_path.is_file():
+                return ReplyPlan.text(
+                    self._canned_replies.reply("apostila_soon_reply", language)
+                )
+            caption = self._canned_replies.reply("apostila_caption", language)
+            try:
+                await self._sender.send_document(
+                    number,
+                    self._apostila_path,
+                    caption,
+                )
+            except Exception:
+                logger.exception("failed to send apostila to %s", number)
+                return ReplyPlan.text(
+                    self._canned_replies.reply("apostila_error_reply", language)
+                )
+            return ReplyPlan.document(caption)
         answer = await self._answerer.answer(text, category, history)
-        return strip_foreign_urls(answer, self._enrollment_url)
+        reply_text = answer.text
+        if answer.needs_handoff:
+            heading = self._canned_replies.reply("human_contact_intro", language)
+            reply_text = (
+                f"{reply_text}\n\n{heading}\n{self._human_contact_reply}"
+            )
+        return ReplyPlan.text(
+            strip_foreign_urls(reply_text, self._enrollment_url),
+            handoff_summary=text if answer.needs_handoff else None,
+        )

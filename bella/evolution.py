@@ -5,7 +5,10 @@ This module is the single normalization point for Evolution GO's wire shapes
 instance's payloads ever differ, this is the only place to adjust.
 """
 
+import asyncio
+import base64
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -55,7 +58,7 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
         text=text,
         push_name=str(info.get("PushName", "")),
         is_from_me=bool(info.get("IsFromMe", False)),
-        is_group=bool(info.get("IsGroup", False)),
+        is_group=bool(info.get("IsGroup", False)) or chat_jid.endswith("@g.us"),
         message_type=str(info.get("Type", "")),
     )
 
@@ -76,6 +79,8 @@ def _extract_text(message: Any) -> str | None:
 
 class WhatsAppSender(Protocol):
     async def send_text(self, number: str, text: str) -> None: ...
+
+    async def send_document(self, number: str, path: Path, caption: str) -> None: ...
 
     async def check_health(self) -> None: ...
 
@@ -99,6 +104,21 @@ class EvolutionSender:
             f"{self._base_url}/send/text",
             headers=self._headers,
             json={"number": number, "text": text},
+        )
+        response.raise_for_status()
+
+    async def send_document(self, number: str, path: Path, caption: str) -> None:
+        contents = await asyncio.to_thread(path.read_bytes)
+        response = await self._client.post(
+            f"{self._base_url}/send/media",
+            headers=self._headers,
+            json={
+                "number": number,
+                "url": base64.b64encode(contents).decode("ascii"),
+                "type": "document",
+                "caption": caption,
+                "filename": path.name,
+            },
         )
         response.raise_for_status()
 

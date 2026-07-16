@@ -5,6 +5,7 @@ assertions observe only the fake sender and HTTP responses.
 """
 
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 from bella.scope_gate import RouteCategory
 from bella.conversation_store import InMemoryConversationStore
@@ -145,6 +146,120 @@ def test_enrollment_question_gets_enrollment_card_answer(sender: FakeSender) -> 
     assert sender.sent == [("5511999999999", expected)]
 
 
+def test_apostila_request_without_pdf_gets_coming_soon_reply(
+    sender: FakeSender,
+) -> None:
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        answerer=answerer,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Quero a apostila", message_id="APOSTILA-SOON"),
+    )
+
+    assert answerer.seen == []
+    assert sender.sent == [
+        ("5511999999999", canned_replies().apostila_soon_reply)
+    ]
+
+
+def test_apostila_request_with_pdf_sends_native_document(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    apostila = tmp_path / "apostila-preview.pdf"
+    apostila.write_bytes(b"%PDF-1.7 test")
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        answerer=answerer,
+        apostila_path=apostila,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Tem material?", message_id="APOSTILA-PDF"),
+    )
+
+    assert answerer.seen == []
+    assert sender.sent == []
+    assert sender.sent_documents == [
+        ("5511999999999", apostila, canned_replies().apostila_caption)
+    ]
+
+
+def test_apostila_send_failure_gets_apologetic_text_fallback(
+    tmp_path: Path,
+) -> None:
+    apostila = tmp_path / "apostila.pdf"
+    apostila.write_bytes(b"%PDF-1.7 test")
+    sender = FakeSender(fail_document=True)
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=apostila,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Me manda a apostila", message_id="APOSTILA-FAIL"),
+    )
+
+    assert sender.sent_documents == []
+    assert sender.sent == [
+        ("5511999999999", canned_replies().apostila_error_reply)
+    ]
+
+
+def test_adding_apostila_at_configured_path_changes_behavior_without_restart(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    apostila = tmp_path / "apostila.pdf"
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=apostila,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Tem apostila?", message_id="APOSTILA-BEFORE"),
+    )
+    apostila.write_bytes(b"%PDF-1.7 final")
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("E agora?", message_id="APOSTILA-AFTER"),
+    )
+
+    assert sender.sent == [
+        ("5511999999999", canned_replies().apostila_soon_reply)
+    ]
+    assert sender.sent_documents == [
+        ("5511999999999", apostila, canned_replies().apostila_caption)
+    ]
+
+
+def test_apostila_unavailable_reply_mirrors_english(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Can you send me the workbook?", message_id="APOSTILA-EN"
+        ),
+    )
+
+    assert "being finalized" in sender.sent[0][1]
+    assert "taught in Portuguese" in sender.sent[0][1]
+
+
 def test_unknown_course_fact_gets_honest_deflection(sender: FakeSender) -> None:
     enrollment_url = course_content().enrollment_url
     expected = (
@@ -163,6 +278,123 @@ def test_unknown_course_fact_gets_honest_deflection(sender: FakeSender) -> None:
     )
 
     assert sender.sent == [("5511999999999", expected)]
+
+
+def test_human_request_gets_contact_and_notifies_admin(sender: FakeSender) -> None:
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.HUMAN_REQUESTED),
+        answerer=answerer,
+        admin_contact="5511888888888",
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Quero falar com uma pessoa", message_id="HANDOFF-HUMAN"
+        ),
+    )
+
+    assert answerer.seen == []
+    assert len(sender.sent) == 2
+    user_number, user_reply = sender.sent[0]
+    assert user_number == "5511999999999"
+    assert "Equipe do SENAI Jandira" in user_reply
+    assert course_content().enrollment_url in user_reply
+    admin_number, notification = sender.sent[1]
+    assert admin_number == "5511888888888"
+    assert "5511999999999" in notification
+    assert "Quero falar com uma pessoa" in notification
+
+
+def test_human_request_reply_mirrors_spanish(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.HUMAN_REQUESTED),
+        admin_contact="5511888888888",
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Quiero hablar con una persona", message_id="HANDOFF-ES"
+        ),
+    )
+
+    assert sender.sent[0][1].startswith("Claro")
+    assert "se imparte en portugues" in sender.sent[0][1]
+    assert course_content().enrollment_url in sender.sent[0][1]
+
+
+def test_grounded_deflection_includes_contact_and_notifies_admin(
+    sender: FakeSender,
+) -> None:
+    enrollment_url = course_content().enrollment_url
+    deflection = (
+        "Nao sei informar isso porque nao consta nos meus materiais. "
+        f"Confira com o SENAI: {enrollment_url}"
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.COURSE_QUESTION),
+        answerer=FakeAnswerer(response=deflection, needs_handoff=True),
+        admin_contact="5511888888888",
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Tem estacionamento?", message_id="HANDOFF-UNKNOWN"),
+    )
+
+    assert sender.sent[0] == (
+        "5511999999999",
+        f"{deflection}\n\nContato humano:\n{course_content().human_contact_reply}",
+    )
+    assert sender.sent[1][0] == "5511888888888"
+    assert "5511999999999" in sender.sent[1][1]
+    assert "Tem estacionamento?" in sender.sent[1][1]
+
+
+def test_admin_messages_do_not_create_notification_loops(sender: FakeSender) -> None:
+    admin = "5511888888888"
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.HUMAN_REQUESTED),
+        admin_contact=admin,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Quero falar com uma pessoa",
+            message_id="HANDOFF-ADMIN",
+            chat=f"{admin}@s.whatsapp.net",
+        ),
+    )
+
+    assert sender.sent == [(admin, course_content().human_contact_reply)]
+
+
+def test_notification_failure_does_not_change_user_reply() -> None:
+    admin = "5511888888888"
+    sender = FakeSender(fail_numbers={admin})
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.HUMAN_REQUESTED),
+        admin_contact=admin,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Preciso de ajuda humana", message_id="HANDOFF-NOTIFY-FAIL"
+        ),
+    )
+
+    assert sender.sent == [
+        ("5511999999999", course_content().human_contact_reply)
+    ]
 
 
 def test_answers_mirror_english_and_spanish_with_portuguese_course_note(
@@ -394,6 +626,27 @@ def test_group_messages_get_no_reply(client: TestClient, sender: FakeSender) -> 
     assert sender.sent == []
 
 
+def test_group_jid_is_ignored_even_when_payload_flag_is_wrong(
+    sender: FakeSender,
+) -> None:
+    gate = FakeScopeGate()
+    client = make_test_client(sender, scope_gate=gate)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "oi grupo",
+            is_group=False,
+            chat="120363000000000000@g.us",
+            message_id="GROUP-JID",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert gate.seen == []
+    assert sender.sent == []
+
+
 def test_extended_text_message_gets_a_reply(
     client: TestClient, sender: FakeSender
 ) -> None:
@@ -424,16 +677,59 @@ def test_non_message_event_is_acked_and_ignored(
     assert sender.sent == []
 
 
-def test_message_without_text_is_acked_and_ignored(
-    client: TestClient, sender: FakeSender
-) -> None:
-    # Media handling arrives in ticket 09; the skeleton just stays silent.
+def test_non_text_dm_gets_text_only_reply_without_llm(sender: FakeSender) -> None:
+    gate = FakeScopeGate()
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, scope_gate=gate, answerer=answerer)
+
     response = client.post(
         WEBHOOK, json=make_webhook_payload(None, message_type="image")
     )
 
     assert response.status_code == 200
-    assert sender.sent == []
+    assert gate.seen == []
+    assert answerer.seen == []
+    assert sender.sent == [("5511999999999", canned_replies().media_reply)]
+
+
+def test_rate_limit_replies_once_then_stays_silent_until_window_clears(
+    sender: FakeSender,
+) -> None:
+    now = [0.0]
+    gate = FakeScopeGate()
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        scope_gate=gate,
+        answerer=answerer,
+        rate_limit_max_messages=2,
+        rate_limit_window_seconds=60,
+        rate_limit_clock=lambda: now[0],
+    )
+
+    for sequence in range(1, 5):
+        client.post(
+            WEBHOOK,
+            json=make_webhook_payload(
+                f"mensagem {sequence}", message_id=f"RATE-{sequence}"
+            ),
+        )
+
+    assert gate.seen == ["mensagem 1", "mensagem 2"]
+    assert [text for _, text in sender.sent] == [
+        "placeholder answer: mensagem 1",
+        "placeholder answer: mensagem 2",
+        canned_replies().rate_limit_reply,
+    ]
+
+    now[0] = 61.0
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("voltei", message_id="RATE-AFTER-WINDOW"),
+    )
+
+    assert gate.seen[-1] == "voltei"
+    assert sender.sent[-1] == ("5511999999999", "placeholder answer: voltei")
 
 
 def test_send_failure_still_acks_the_webhook(sender: FakeSender) -> None:

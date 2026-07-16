@@ -41,4 +41,8 @@ def build_pipeline(settings: Settings) -> Pipeline:
             settings.database_url,
             required_database_name="bella",
         ),
+        settings.apostila_path,
+        content.human_contact_reply,
+        settings.admin_contact,
+        settings.rate_limit_policy,
     )
