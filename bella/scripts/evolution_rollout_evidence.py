@@ -83,6 +83,12 @@ def _validate_digest(value: object, name: str, errors: list[str]) -> None:
 
 def _validate_provenance(manifest: Mapping[str, object], errors: list[str]) -> None:
     provenance = _mapping(manifest.get("provenance"), "provenance", errors)
+    _require_equal(
+        provenance.get("candidate_kind"),
+        PATCHED_CANDIDATE_KIND,
+        "provenance.candidate_kind",
+        errors,
+    )
     _require_equal(provenance.get("source_commit"), SOURCE_COMMIT, "source_commit", errors)
     _require_equal(provenance.get("patch_commits"), PATCH_COMMITS, "patch_commits", errors)
     _require_equal(
@@ -784,6 +790,7 @@ def _artifact_templates(kinds: Sequence[str]) -> list[dict[str, str]]:
 
 def _template(name: str) -> dict[str, object]:
     provenance: dict[str, object] = {
+        "candidate_kind": PATCHED_CANDIDATE_KIND,
         "source_commit": SOURCE_COMMIT,
         "patch_commits": PATCH_COMMITS,
         "image_reference": PATCHED_REFERENCE,
@@ -796,9 +803,7 @@ def _template(name: str) -> dict[str, object]:
         "idle_session_timeout": "",
     }
     if name in {"reconnect", "official-reconnect"}:
-        if name == "reconnect":
-            provenance["candidate_kind"] = PATCHED_CANDIDATE_KIND
-        else:
+        if name == "official-reconnect":
             provenance = {
                 "candidate_kind": OFFICIAL_CANDIDATE_KIND,
                 "release_tag": "",

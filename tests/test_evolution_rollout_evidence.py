@@ -332,6 +332,7 @@ def rollout_manifest(tmp_path: Path) -> dict[str, Any]:
             "new_evolution_sessions_verified": True,
         },
         "provenance": {
+            "candidate_kind": "bella-patched",
             "source_commit": SOURCE_COMMIT,
             "patch_commits": PATCH_COMMITS,
             "image_reference": "bella/evolution-go:0.7.2-pr117-0328955",
@@ -405,6 +406,22 @@ def test_production_rollout_manifest_passes_with_immutable_recovery_evidence(
     assert assessment["decision"] == "pass"
     assert assessment["errors"] == []
     assert assessment["evidence_scope"] == "operator-supplied-production"
+
+
+@pytest.mark.parametrize("candidate_kind", [None, "official-release"])
+def test_rollout_rejects_missing_or_wrong_candidate_kind(
+    tmp_path: Path, candidate_kind: str | None
+) -> None:
+    manifest = rollout_manifest(tmp_path)
+    if candidate_kind is None:
+        del manifest["provenance"]["candidate_kind"]
+    else:
+        manifest["provenance"]["candidate_kind"] = candidate_kind
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "candidate_kind" in _errors_text(assessment)
 
 
 def test_rollout_rejects_fabricated_ticket04_assessment_digest(tmp_path: Path) -> None:
@@ -668,3 +685,5 @@ def test_cli_emits_incomplete_templates_without_claiming_real_evidence(
         assert document["provenance"]["candidate_kind"] == "official-release"
         assert document["provenance"]["contains_pr117_or_equivalent_fix"] is False
         assert document["provenance"]["fix_identity"] == ""
+    if template == "rollout":
+        assert document["provenance"]["candidate_kind"] == "bella-patched"
