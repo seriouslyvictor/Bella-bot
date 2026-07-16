@@ -88,7 +88,9 @@ def _extract_message_id(payload: Any) -> str:
     info = data.get("Info") if isinstance(data, dict) else None
     message_id = info.get("ID") if isinstance(info, dict) else None
     if not isinstance(message_id, str):
-        raise ValueError(f"Evolution GO send response missing data.Info.ID: {payload!r}")
+        # No payload in the error: send responses carry the message body and
+        # recipient, and this exception ends up in the logs.
+        raise ValueError("Evolution GO send response missing data.Info.ID")
     return message_id
 
 
