@@ -1,11 +1,11 @@
 """Claude Sonnet answers grounded in Bella's public course content."""
 
-import json
 import logging
 from collections.abc import Sequence
 
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, OutputConfigParam, TextBlockParam
+from anthropic.types import MessageParam, TextBlockParam
+from pydantic import BaseModel
 
 from bella.conversation_store import ConversationMessage
 from bella.course_content import CourseContent
@@ -42,20 +42,9 @@ Grounding and safety rules:
   material and the user should be followed up by a person.
 """
 
-OUTPUT_CONFIG: OutputConfigParam = {
-    "format": {
-        "type": "json_schema",
-        "schema": {
-            "type": "object",
-            "properties": {
-                "answer": {"type": "string"},
-                "needs_handoff": {"type": "boolean"},
-            },
-            "required": ["answer", "needs_handoff"],
-            "additionalProperties": False,
-        },
-    }
-}
+class AnswerPayload(BaseModel):
+    answer: str
+    needs_handoff: bool
 
 
 class AnthropicAnswerer:
@@ -93,7 +82,7 @@ class AnthropicAnswerer:
                 ),
             }
         )
-        response = await self._client.with_options(timeout=TIMEOUT).messages.create(
+        response = await self._client.with_options(timeout=TIMEOUT).messages.parse(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             # Sonnet 5 runs adaptive thinking when this is omitted, which would add
@@ -101,7 +90,7 @@ class AnthropicAnswerer:
             thinking={"type": "disabled"},
             system=self._system,
             messages=messages,
-            output_config=OUTPUT_CONFIG,
+            output_format=AnswerPayload,
         )
         self.last_cache_read_tokens = response.usage.cache_read_input_tokens or 0
         logger.info(
@@ -109,16 +98,10 @@ class AnthropicAnswerer:
             response.usage.cache_creation_input_tokens or 0,
             self.last_cache_read_tokens,
         )
-        raw_answer = "".join(
-            block.text for block in response.content if block.type == "text"
-        ).strip()
-        if not raw_answer:
-            raise ValueError("answering model returned no text")
-        parsed = json.loads(raw_answer)
-        answer = parsed.get("answer")
-        needs_handoff = parsed.get("needs_handoff")
-        if not isinstance(answer, str) or not answer.strip():
+        payload = response.parsed_output
+        if payload is None:
+            raise ValueError("answering model returned no structured answer")
+        answer = payload.answer.strip()
+        if not answer:
             raise ValueError("answering model returned an empty answer")
-        if not isinstance(needs_handoff, bool):
-            raise ValueError("answering model returned an invalid handoff signal")
-        return AnswerResult(answer.strip(), needs_handoff)
+        return AnswerResult(answer, payload.needs_handoff)

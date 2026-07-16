@@ -4,7 +4,6 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
-from time import monotonic
 
 
 @dataclass(frozen=True)
@@ -35,7 +34,7 @@ class SlidingWindowRateLimiter:
     def __init__(
         self,
         policy: RateLimitPolicy,
-        clock: Callable[[], float] = monotonic,
+        clock: Callable[[], float],
         recipient_capacity: int = 10_000,
     ) -> None:
         self._policy = policy
@@ -54,20 +53,20 @@ class SlidingWindowRateLimiter:
         while state.events and state.events[0] <= cutoff:
             state.events.popleft()
 
-        if len(state.events) < self._policy.max_messages:
-            state.events.append(now)
-            state.notified = False
+        allowed = len(state.events) < self._policy.max_messages
+        already_notified = state.notified
+        # Retain the newest attempts so a continuous flood extends the block,
+        # while maxlen prevents one recipient from consuming unbounded RAM.
+        state.events.append(now)
+        state.notified = not allowed
+        if allowed:
             decision = RateLimitDecision.ALLOW
         else:
-            # Retain the newest attempts so a continuous flood extends the block,
-            # while maxlen prevents one recipient from consuming unbounded RAM.
-            state.events.append(now)
             decision = (
                 RateLimitDecision.SILENCE
-                if state.notified
+                if already_notified
                 else RateLimitDecision.NOTIFY
             )
-            state.notified = True
 
         if len(self._states) > self._recipient_capacity:
             self._states.popitem(last=False)

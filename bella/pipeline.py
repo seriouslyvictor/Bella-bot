@@ -75,19 +75,9 @@ class Answerer(Protocol):
 
 @dataclass(frozen=True)
 class ReplyPlan:
-    history_text: str
-    outbound_text: str | None
-    handoff_summary: str | None = None
-
-    @classmethod
-    def text(
-        cls, text: str, *, handoff_summary: str | None = None
-    ) -> "ReplyPlan":
-        return cls(text, text, handoff_summary)
-
-    @classmethod
-    def document(cls, caption: str) -> "ReplyPlan":
-        return cls(caption, None)
+    text: str
+    already_sent: bool = False  # the apostila path sends its own document
+    needs_handoff: bool = False
 
 
 class Pipeline:
@@ -158,11 +148,11 @@ class Pipeline:
         if not await self._conversation_store.claim_delivery(message.message_id):
             logger.info("duplicate delivery ignored: %s", message.message_id)
             return
-        language = detect_reply_language(message.text)
         rate_limit = self._rate_limiter.check(message.number)
         if rate_limit is RateLimitDecision.SILENCE:
             logger.info("rate-limited message silenced: %s", message.message_id)
             return
+        language = detect_reply_language(message.text)
         if rate_limit is RateLimitDecision.NOTIFY:
             await self._sender.send_text(
                 message.number,
@@ -198,17 +188,15 @@ class Pipeline:
             # Guards the whole reply-producing step, not just one stage of it:
             # every stage added here must degrade to a reply, never to silence.
             logger.exception("reply production failed for %s", message.message_id)
-            plan = ReplyPlan.text(
-                self._canned_replies.reply("error_reply", language)
-            )
-        if plan.outbound_text is not None:
-            await self._sender.send_text(message.number, plan.outbound_text)
+            plan = ReplyPlan(self._canned_replies.reply("error_reply", language))
+        if not plan.already_sent:
+            await self._sender.send_text(message.number, plan.text)
         await self._conversation_store.append_message(
             message.number,
-            ConversationMessage("assistant", plan.history_text, datetime.now(UTC)),
+            ConversationMessage("assistant", plan.text, datetime.now(UTC)),
         )
-        if plan.handoff_summary is not None:
-            await self._notify_admin(message.number, plan.handoff_summary)
+        if plan.needs_handoff:
+            await self._notify_admin(message.number, message.text)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
 
     async def _notify_admin(self, user_number: str, summary: str) -> None:
@@ -233,16 +221,16 @@ class Pipeline:
     ) -> ReplyPlan:
         category = await self._scope_gate.classify(text)
         if category is RouteCategory.OUT_OF_SCOPE:
-            return ReplyPlan.text(self._refusals.take(number))
+            return ReplyPlan(self._refusals.take(number))
         if category is RouteCategory.HUMAN_REQUESTED:
             contact = self._human_contact_reply
             if language is not ReplyLanguage.PORTUGUESE:
                 intro = self._canned_replies.reply("human_contact_intro", language)
                 contact = f"{intro}\n{contact}"
-            return ReplyPlan.text(contact, handoff_summary=text)
+            return ReplyPlan(contact, needs_handoff=True)
         if category is RouteCategory.APOSTILA_REQUEST:
             if not self._apostila_path.is_file():
-                return ReplyPlan.text(
+                return ReplyPlan(
                     self._canned_replies.reply("apostila_soon_reply", language)
                 )
             caption = self._canned_replies.reply("apostila_caption", language)
@@ -254,10 +242,10 @@ class Pipeline:
                 )
             except Exception:
                 logger.exception("failed to send apostila to %s", number)
-                return ReplyPlan.text(
+                return ReplyPlan(
                     self._canned_replies.reply("apostila_error_reply", language)
                 )
-            return ReplyPlan.document(caption)
+            return ReplyPlan(caption, already_sent=True)
         answer = await self._answerer.answer(text, category, history)
         reply_text = answer.text
         if answer.needs_handoff:
@@ -265,7 +253,7 @@ class Pipeline:
             reply_text = (
                 f"{reply_text}\n\n{heading}\n{self._human_contact_reply}"
             )
-        return ReplyPlan.text(
+        return ReplyPlan(
             strip_foreign_urls(reply_text, self._enrollment_url),
-            handoff_summary=text if answer.needs_handoff else None,
+            needs_handoff=answer.needs_handoff,
         )

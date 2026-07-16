@@ -77,6 +77,10 @@ def _extract_text(message: Any) -> str | None:
     return text
 
 
+def _read_base64(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 class WhatsAppSender(Protocol):
     async def send_text(self, number: str, text: str) -> None: ...
 
@@ -108,13 +112,15 @@ class EvolutionSender:
         response.raise_for_status()
 
     async def send_document(self, number: str, path: Path, caption: str) -> None:
-        contents = await asyncio.to_thread(path.read_bytes)
+        # Encode in the worker thread too: b64 of a multi-MB PDF is CPU-bound and
+        # would otherwise stall every other in-flight message on the event loop.
+        encoded = await asyncio.to_thread(_read_base64, path)
         response = await self._client.post(
             f"{self._base_url}/send/media",
             headers=self._headers,
             json={
                 "number": number,
-                "url": base64.b64encode(contents).decode("ascii"),
+                "url": encoded,
                 "type": "document",
                 "caption": caption,
                 "filename": path.name,

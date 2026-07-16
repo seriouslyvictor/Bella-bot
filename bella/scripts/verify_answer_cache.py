@@ -1,4 +1,4 @@
-"""Verify the Opus answering prefix is read from cache on a repeated call."""
+"""Verify the answering prefix is read from cache on a repeated call."""
 
 import asyncio
 

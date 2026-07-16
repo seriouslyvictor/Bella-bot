@@ -28,5 +28,18 @@ A pre-written, friendly decline template sent verbatim when the Scope Gate rules
 **Handoff Notification**:
 The message forwarded to the course owner when a user asks for a human or Bella cannot answer an in-scope question. Bella also gives the user the SENAI contact from the Enrollment Card.
 
+**Takeover**:
+The course owner typing directly into a user's chat from Bella's own number. Implicitly starts a Takeover Pause for that conversation; no command is involved.
+_Avoid_: handoff (that's the notification to the owner, which often precedes a takeover)
+
+**Takeover Pause**:
+The per-conversation sliding quiet period (default 1 hour, reset by every Takeover message) during which Bella stores messages but never answers them, because the human owns the conversation. The sanctioned exception to always-reply. Ends by expiry or by a resume command on the Control Channel.
+
+**Control Channel**:
+The path for owner commands to Bella. First source: messages from the admin contact number; recognized future source: the self-chat on Bella's own number. Commands never reach the Scope Gate or the LLM.
+
+**Owner** (message role):
+A human-typed message sent from Bella's number in a user chat. Never Bella's own words; stored under a distinct role so the LLM cannot mistake a human's commitments for its own.
+
 **Source Documents**:
 The internal course files (Plano Mestre, Apostila) that the Knowledge Base is distilled from. Contain internal operational details and must never be exposed to the bot or users.

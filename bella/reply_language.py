@@ -11,13 +11,8 @@ class ReplyLanguage(StrEnum):
     SPANISH = "es"
 
 
-def detect_reply_language(text: str | None) -> ReplyLanguage:
-    """Recognize common English/Spanish request words; default safely to pt-BR."""
-    if not text:
-        return ReplyLanguage.PORTUGUESE
-    normalized = unicodedata.normalize("NFKD", text.casefold())
-    words = set(re.findall(r"[a-z]+", normalized))
-    spanish_markers = {
+SPANISH_MARKERS = frozenset(
+    {
         "quiero",
         "hablar",
         "persona",
@@ -27,7 +22,9 @@ def detect_reply_language(text: str | None) -> ReplyLanguage:
         "inscripcion",
         "gracias",
     }
-    english_markers = {
+)
+ENGLISH_MARKERS = frozenset(
+    {
         "can",
         "could",
         "please",
@@ -38,8 +35,17 @@ def detect_reply_language(text: str | None) -> ReplyLanguage:
         "enrollment",
         "thanks",
     }
-    if words & spanish_markers:
+)
+
+
+def detect_reply_language(text: str | None) -> ReplyLanguage:
+    """Recognize common English/Spanish request words; default safely to pt-BR."""
+    if not text:
+        return ReplyLanguage.PORTUGUESE
+    normalized = unicodedata.normalize("NFKD", text.casefold())
+    words = set(re.findall(r"[a-z]+", normalized))
+    if words & SPANISH_MARKERS:
         return ReplyLanguage.SPANISH
-    if words & english_markers:
+    if words & ENGLISH_MARKERS:
         return ReplyLanguage.ENGLISH
     return ReplyLanguage.PORTUGUESE

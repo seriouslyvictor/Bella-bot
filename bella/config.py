@@ -23,6 +23,14 @@ def _path_from_env(var: str, default: Path) -> Path:
     return Path(os.environ.get(var, default))
 
 
+# The dataclass owns the numbers; the env vars only override them.
+_RATE_LIMIT_DEFAULTS = RateLimitPolicy()
+
+
+def _int_from_env(var: str, default: int) -> int:
+    return int(os.environ.get(var, default))
+
+
 @dataclass(frozen=True)
 class Settings:
     # Evolution GO's service URL on the unified Compose network.
@@ -69,9 +77,11 @@ class Settings:
             ),
             apostila_path=_path_from_env("APOSTILA_PATH", DEFAULT_APOSTILA_PATH),
             rate_limit_policy=RateLimitPolicy(
-                max_messages=int(os.environ.get("RATE_LIMIT_MAX_MESSAGES", "10")),
-                window_seconds=int(
-                    os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60")
+                max_messages=_int_from_env(
+                    "RATE_LIMIT_MAX_MESSAGES", _RATE_LIMIT_DEFAULTS.max_messages
+                ),
+                window_seconds=_int_from_env(
+                    "RATE_LIMIT_WINDOW_SECONDS", _RATE_LIMIT_DEFAULTS.window_seconds
                 ),
             ),
         )
