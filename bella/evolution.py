@@ -81,10 +81,21 @@ def _read_base64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-class WhatsAppSender(Protocol):
-    async def send_text(self, number: str, text: str) -> None: ...
+def _extract_message_id(payload: Any) -> str:
+    """Send-endpoint responses wrap the sent message in the same Info.ID
+    shape as webhook deliveries (data.Info.ID)."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    info = data.get("Info") if isinstance(data, dict) else None
+    message_id = info.get("ID") if isinstance(info, dict) else None
+    if not isinstance(message_id, str):
+        raise ValueError(f"Evolution GO send response missing data.Info.ID: {payload!r}")
+    return message_id
 
-    async def send_document(self, number: str, path: Path, caption: str) -> None: ...
+
+class WhatsAppSender(Protocol):
+    async def send_text(self, number: str, text: str) -> str: ...
+
+    async def send_document(self, number: str, path: Path, caption: str) -> str: ...
 
     async def check_health(self) -> None: ...
 
@@ -103,15 +114,16 @@ class EvolutionSender:
         self._base_url = base_url.rstrip("/")
         self._headers = {"apikey": api_key, "instanceId": instance_id}
 
-    async def send_text(self, number: str, text: str) -> None:
+    async def send_text(self, number: str, text: str) -> str:
         response = await self._client.post(
             f"{self._base_url}/send/text",
             headers=self._headers,
             json={"number": number, "text": text},
         )
         response.raise_for_status()
+        return _extract_message_id(response.json())
 
-    async def send_document(self, number: str, path: Path, caption: str) -> None:
+    async def send_document(self, number: str, path: Path, caption: str) -> str:
         # Encode in the worker thread too: b64 of a multi-MB PDF is CPU-bound and
         # would otherwise stall every other in-flight message on the event loop.
         encoded = await asyncio.to_thread(_read_base64, path)
@@ -127,6 +139,7 @@ class EvolutionSender:
             },
         )
         response.raise_for_status()
+        return _extract_message_id(response.json())
 
     async def check_health(self) -> None:
         # /server/ok reflects process availability without requiring an active

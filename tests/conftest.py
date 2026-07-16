@@ -36,16 +36,24 @@ class FakeSender:
         self.fail_document = fail_document
         self.fail_numbers = fail_numbers or set()
         self.unhealthy = unhealthy
+        self._next_message_id = 1
 
-    async def send_text(self, number: str, text: str) -> None:
+    async def send_text(self, number: str, text: str) -> str:
         if self.fail or number in self.fail_numbers:
             raise RuntimeError("simulated send failure")
         self.sent.append((number, text))
+        return self._issue_message_id()
 
-    async def send_document(self, number: str, path: Path, caption: str) -> None:
+    async def send_document(self, number: str, path: Path, caption: str) -> str:
         if self.fail_document:
             raise RuntimeError("simulated document send failure")
         self.sent_documents.append((number, path, caption))
+        return self._issue_message_id()
+
+    def _issue_message_id(self) -> str:
+        message_id = f"FAKE-MSG-{self._next_message_id}"
+        self._next_message_id += 1
+        return message_id
 
     async def check_health(self) -> None:
         if self.unhealthy:
