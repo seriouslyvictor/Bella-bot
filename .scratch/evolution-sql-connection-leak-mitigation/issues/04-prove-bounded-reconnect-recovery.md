@@ -30,3 +30,9 @@ blockers. Synthetic positive and negative manifest tests passed as part of the
 environmental checkbox remains open until an authorized operator runs the
 licensed disposable/staging WhatsApp and real-PostgreSQL exercise and retains
 the required artifacts.
+
+2026-07-16 review follow-up — Plateau validation now rejects every adjacent
+post-plateau increase, including `9, 7, 8`. The production gate now hashes and
+parses an actual ticket-04 assessment file and binds its assessed image digest
+to the rollout. These are synthetic decision-engine checks only; all licensed
+environmental acceptance boxes remain open.

@@ -27,3 +27,8 @@ unavailable-PostgreSQL, trend, JSON, and prompted-password cases passed in the
 57-test focused suite. The dedicated runbook contains the Evolution-only
 response and guardrails. A human must still execute the command against the
 real local Compose stack and equivalent Coolify terminal/database path.
+
+2026-07-16 review follow-up — The command now reports the actual PostgreSQL
+`pg_roles.rolconnlimit` and the separately configured/defaulted expected limit,
+and exits `3` on drift. Environment-absent default behavior and drift are unit
+covered; real local and Coolify execution remains correctly unchecked.

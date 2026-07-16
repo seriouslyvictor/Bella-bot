@@ -14,8 +14,19 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from bella.scripts.evolution_connection_policy import (
+    AUTH_POOL_CEILING,
+    MIN_PLATEAU_SAMPLES,
+    MIN_RECONNECT_CYCLES,
+    QUIET_AUTH_IDLE_CEILING,
+    ROLE_CONNECTION_LIMIT,
+    ROLE_IDLE_SESSION_TIMEOUT,
+    WARNING_THRESHOLD,
+)
 
 
 SOURCE_COMMIT = "9337afc47e10b86cc896a6f432240e40fee95dd1"
@@ -85,11 +96,14 @@ def _validate_role(manifest: Mapping[str, object], errors: list[str]) -> None:
     role = _mapping(manifest.get("database_role"), "database_role", errors)
     _require_equal(role.get("rolsuper"), False, "database_role.rolsuper", errors)
     _require_equal(
-        role.get("connection_limit"), 30, "database_role.connection_limit", errors
+        role.get("connection_limit"),
+        ROLE_CONNECTION_LIMIT,
+        "database_role.connection_limit",
+        errors,
     )
     _require_equal(
         role.get("idle_session_timeout"),
-        "5min",
+        ROLE_IDLE_SESSION_TIMEOUT,
         "database_role.idle_session_timeout",
         errors,
     )
@@ -102,82 +116,120 @@ def _integer(value: object, name: str, errors: list[str]) -> int | None:
     return value
 
 
+@dataclass(frozen=True)
+class _ConnectionSample:
+    raw: Mapping[str, object]
+    total: int | None
+    auth_total: int | None
+    auth_idle: int | None
+
+
+def _parse_connection_samples(
+    values: Sequence[object],
+    name: str,
+    errors: list[str],
+    *,
+    require_idle: bool,
+) -> list[_ConnectionSample]:
+    """Parse shared count fields and enforce the common policy ceilings."""
+    parsed: list[_ConnectionSample] = []
+    for index, raw_value in enumerate(values):
+        item_name = f"{name}[{index}]"
+        sample = _mapping(raw_value, item_name, errors)
+        total = _integer(sample.get("total"), f"{item_name}.total", errors)
+        auth_total = _integer(
+            sample.get("evogo_auth_total"), f"{item_name}.evogo_auth_total", errors
+        )
+        auth_idle = (
+            _integer(
+                sample.get("evogo_auth_idle"), f"{item_name}.evogo_auth_idle", errors
+            )
+            if require_idle
+            else None
+        )
+        if total is not None and total >= WARNING_THRESHOLD:
+            errors.append(
+                f"{item_name}.total must remain below {WARNING_THRESHOLD}"
+            )
+        if auth_total is not None and auth_total > AUTH_POOL_CEILING:
+            errors.append(
+                f"{item_name}.evogo_auth_total must not exceed {AUTH_POOL_CEILING}"
+            )
+        if auth_idle is not None and auth_idle < 0:
+            errors.append(f"{item_name}.evogo_auth_idle cannot be negative")
+        parsed.append(_ConnectionSample(sample, total, auth_total, auth_idle))
+    return parsed
+
+
+def _increases(values: Sequence[int | None]) -> bool:
+    return all(value is not None for value in values) and any(
+        current > previous
+        for previous, current in zip(values, values[1:])
+        if previous is not None and current is not None
+    )
+
+
 def _validate_samples(exercise: Mapping[str, object], errors: list[str]) -> None:
     cycles = _integer(exercise.get("cycles_completed"), "cycles_completed", errors)
     plateau_start = _integer(
         exercise.get("plateau_start_cycle"), "plateau_start_cycle", errors
     )
-    samples = _sequence(exercise.get("samples"), "samples", errors)
+    raw_samples = _sequence(exercise.get("samples"), "samples", errors)
+    samples = _parse_connection_samples(
+        raw_samples, "samples", errors, require_idle=True
+    )
     if cycles is None or plateau_start is None:
         return
-    if cycles < 30:
-        errors.append("cycles_completed must be at least 30")
-    if plateau_start < 1 or plateau_start > cycles - 9:
-        errors.append("plateau_start_cycle must leave at least 10 sampled reconnect cycles")
+    if cycles < MIN_RECONNECT_CYCLES:
+        errors.append(
+            f"cycles_completed must be at least {MIN_RECONNECT_CYCLES}"
+        )
+    if plateau_start < 1 or plateau_start > cycles - (MIN_PLATEAU_SAMPLES - 1):
+        errors.append(
+            "plateau_start_cycle must leave at least "
+            f"{MIN_PLATEAU_SAMPLES} sampled reconnect cycles"
+        )
 
-    by_phase: dict[str, list[Mapping[str, object]]] = {
+    by_phase: dict[str, list[_ConnectionSample]] = {
         "before": [],
         "during": [],
         "after": [],
     }
-    for index, raw_sample in enumerate(samples):
-        sample = _mapping(raw_sample, f"samples[{index}]", errors)
-        phase = sample.get("phase")
+    for index, parsed_sample in enumerate(samples):
+        phase = parsed_sample.raw.get("phase")
         if phase not in by_phase:
             errors.append(f"samples[{index}].phase must be before, during, or after")
             continue
-        by_phase[str(phase)].append(sample)
-        total = _integer(sample.get("total"), f"samples[{index}].total", errors)
-        auth_total = _integer(
-            sample.get("evogo_auth_total"),
-            f"samples[{index}].evogo_auth_total",
-            errors,
-        )
-        auth_idle = _integer(
-            sample.get("evogo_auth_idle"),
-            f"samples[{index}].evogo_auth_idle",
-            errors,
-        )
-        if total is not None and total >= 24:
-            errors.append(f"samples[{index}].total must remain below 24")
-        if auth_total is not None and auth_total > 20:
-            errors.append(f"samples[{index}].evogo_auth_total must not exceed 20")
-        if auth_idle is not None and auth_idle < 0:
-            errors.append(f"samples[{index}].evogo_auth_idle cannot be negative")
+        by_phase[str(phase)].append(parsed_sample)
 
     if len(by_phase["before"]) < 1 or len(by_phase["after"]) < 1:
         errors.append("samples must include before and after phases")
 
-    during_by_cycle: dict[int, Mapping[str, object]] = {}
-    for sample in by_phase["during"]:
-        cycle = _integer(sample.get("cycle"), "during sample cycle", errors)
+    during_by_cycle: dict[int, _ConnectionSample] = {}
+    for during_sample in by_phase["during"]:
+        cycle = _integer(
+            during_sample.raw.get("cycle"), "during sample cycle", errors
+        )
         if cycle is not None:
-            during_by_cycle[cycle] = sample
+            during_by_cycle[cycle] = during_sample
     expected_cycles = set(range(1, cycles + 1))
     if set(during_by_cycle) != expected_cycles or len(by_phase["during"]) != cycles:
         errors.append("samples must include exactly one during sample for every reconnect cycle")
 
     plateau = [during_by_cycle[cycle] for cycle in range(plateau_start, cycles + 1) if cycle in during_by_cycle]
-    if len(plateau) >= 10:
-        plateau_total = plateau[0].get("total")
-        plateau_auth = plateau[0].get("evogo_auth_total")
-        if isinstance(plateau_total, int) and any(
-            not isinstance(current := sample.get("total"), int)
-            or current > plateau_total
-            for sample in plateau
-        ):
-            errors.append("total Evolution sessions rise after plateau_start_cycle")
-        if isinstance(plateau_auth, int) and any(
-            not isinstance(current := sample.get("evogo_auth_total"), int)
-            or current > plateau_auth
-            for sample in plateau
-        ):
-            errors.append("evogo_auth sessions rise after plateau_start_cycle")
+    if len(plateau) >= MIN_PLATEAU_SAMPLES:
+        if _increases([plateau_sample.total for plateau_sample in plateau]):
+            errors.append("total Evolution sessions increase after plateau_start_cycle")
+        if _increases([plateau_sample.auth_total for plateau_sample in plateau]):
+            errors.append("evogo_auth sessions increase after plateau_start_cycle")
 
-    for index, sample in enumerate(by_phase["after"]):
-        idle = sample.get("evogo_auth_idle")
-        if isinstance(idle, int) and idle > 5:
-            errors.append(f"after sample {index} has more than 5 idle evogo_auth sessions")
+    for index, after_sample in enumerate(by_phase["after"]):
+        idle = after_sample.auth_idle
+        if isinstance(idle, int) and idle > QUIET_AUTH_IDLE_CEILING:
+            errors.append(
+                f"after sample {index} has more than {QUIET_AUTH_IDLE_CEILING} "
+                "idle evogo_auth sessions"
+            )
 
 
 def _validate_artifacts(
@@ -306,35 +358,29 @@ def _validate_pinned_reference(
 
 
 def _validate_rollout_samples(post: Mapping[str, object], errors: list[str]) -> None:
-    samples = _sequence(post.get("connection_samples"), "connection_samples", errors)
+    raw_samples = _sequence(
+        post.get("connection_samples"), "connection_samples", errors
+    )
+    samples = _parse_connection_samples(
+        raw_samples, "connection_samples", errors, require_idle=False
+    )
     if len(samples) < 3:
         errors.append("connection_samples must cover at least three observation points")
     sequences: list[int] = []
     totals: list[int] = []
     auth_totals: list[int] = []
-    for index, raw_sample in enumerate(samples):
-        sample = _mapping(raw_sample, f"connection_samples[{index}]", errors)
+    for index, sample in enumerate(samples):
         sequence = _integer(
-            sample.get("sequence"), f"connection_samples[{index}].sequence", errors
-        )
-        total = _integer(sample.get("total"), f"connection_samples[{index}].total", errors)
-        auth_total = _integer(
-            sample.get("evogo_auth_total"),
-            f"connection_samples[{index}].evogo_auth_total",
+            sample.raw.get("sequence"),
+            f"connection_samples[{index}].sequence",
             errors,
         )
         if sequence is not None:
             sequences.append(sequence)
-        if total is not None and total >= 24:
-            errors.append(f"connection_samples[{index}].total must remain below 24")
-        if total is not None:
-            totals.append(total)
-        if auth_total is not None and auth_total > 20:
-            errors.append(
-                f"connection_samples[{index}].evogo_auth_total must not exceed 20"
-            )
-        if auth_total is not None:
-            auth_totals.append(auth_total)
+        if sample.total is not None:
+            totals.append(sample.total)
+        if sample.auth_total is not None:
+            auth_totals.append(sample.auth_total)
     if sequences != list(range(1, len(samples) + 1)):
         errors.append("connection_samples sequence must be contiguous and ordered from 1")
     if len(totals) > 1 and all(
@@ -349,8 +395,78 @@ def _validate_rollout_samples(post: Mapping[str, object], errors: list[str]) -> 
     _require_equal(post.get("upward_reconnect_trend"), False, "upward_reconnect_trend", errors)
 
 
+def _validate_ticket04_assessment(
+    section: Mapping[str, object],
+    *,
+    path_field: str,
+    digest_field: str,
+    expected_image_digest: object,
+    base_dir: Path,
+    errors: list[str],
+) -> None:
+    """Verify a byte-bound, passing ticket-04 assessment for the right image."""
+    raw_path = section.get(path_field)
+    expected_digest = section.get(digest_field)
+    label = "ticket-04 assessment"
+    if not isinstance(raw_path, str) or not raw_path:
+        errors.append(f"{path_field} must identify the actual {label} file")
+        return
+    if not isinstance(expected_digest, str) or _SHA256.fullmatch(expected_digest) is None:
+        errors.append(f"{digest_field} must be 64 lowercase hex")
+        return
+
+    base = base_dir.resolve()
+    path = (base / raw_path).resolve()
+    if not path.is_relative_to(base):
+        errors.append(f"{label} must be inside the manifest directory")
+        return
+    if not path.is_file():
+        errors.append(f"{label} does not exist: {raw_path}")
+        return
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_digest:
+        errors.append(f"{label} SHA-256 mismatch")
+        return
+    try:
+        assessment = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        errors.append(f"{label} must be valid UTF-8 JSON")
+        return
+    document = _mapping(assessment, label, errors)
+    required_artifacts = {
+        "connection-samples",
+        "evolution-logs",
+        "image-identity",
+        "message-results",
+    }
+    artifact_hashes = document.get("artifact_sha256")
+    artifact_hashes_valid = isinstance(artifact_hashes, Mapping) and all(
+        isinstance(artifact_hashes.get(kind), str)
+        and _SHA256.fullmatch(str(artifact_hashes.get(kind))) is not None
+        for kind in required_artifacts
+    )
+    manifest_digest = document.get("manifest_sha256")
+    if not (
+        document.get("schema_version") == 1
+        and document.get("kind") == "reconnect-acceptance"
+        and document.get("decision") == "pass"
+        and document.get("errors") == []
+        and document.get("evidence_scope")
+        == "operator-supplied-licensed-environment"
+        and isinstance(manifest_digest, str)
+        and _SHA256.fullmatch(manifest_digest) is not None
+        and artifact_hashes_valid
+    ):
+        errors.append(f"{label} must be a passing reconnect-acceptance assessment")
+    if document.get("subject_image_digest") != expected_image_digest:
+        errors.append(f"{label} must assess the image digest being deployed")
+
+
 def _validate_official_exit(
-    manifest: Mapping[str, object], artifacts_required: set[str], errors: list[str]
+    manifest: Mapping[str, object],
+    base_dir: Path,
+    artifacts_required: set[str],
+    errors: list[str],
 ) -> None:
     official = _mapping(
         manifest.get("official_release_exit"), "official_release_exit", errors
@@ -380,9 +496,14 @@ def _validate_official_exit(
         ],
         errors,
     )
-    assessment_digest = official.get("ticket04_assessment_sha256")
-    if not isinstance(assessment_digest, str) or _SHA256.fullmatch(assessment_digest) is None:
-        errors.append("ticket04_assessment_sha256 must bind retirement to its acceptance run")
+    _validate_ticket04_assessment(
+        official,
+        path_field="ticket04_assessment_path",
+        digest_field="ticket04_assessment_sha256",
+        expected_image_digest=official.get("image_digest"),
+        base_dir=base_dir,
+        errors=errors,
+    )
     artifacts_required.add("official-release-verification")
 
 
@@ -399,9 +520,15 @@ def _assess_rollout(
         manifest.get("reconnect_acceptance"), "reconnect_acceptance", errors
     )
     _require_equal(acceptance.get("decision"), "pass", "reconnect_acceptance.decision", errors)
-    acceptance_digest = acceptance.get("assessment_sha256")
-    if not isinstance(acceptance_digest, str) or _SHA256.fullmatch(acceptance_digest) is None:
-        errors.append("reconnect_acceptance.assessment_sha256 must be 64 lowercase hex")
+    provenance_for_acceptance = _mapping(manifest.get("provenance"), "provenance", errors)
+    _validate_ticket04_assessment(
+        acceptance,
+        path_field="assessment_path",
+        digest_field="assessment_sha256",
+        expected_image_digest=provenance_for_acceptance.get("image_digest"),
+        base_dir=base_dir,
+        errors=errors,
+    )
 
     pre = _mapping(manifest.get("pre_change"), "pre_change", errors)
     _require_true(
@@ -531,7 +658,7 @@ def _assess_rollout(
         "post-change-state",
         "rollback-rehearsal",
     }
-    _validate_official_exit(manifest, required_artifacts, errors)
+    _validate_official_exit(manifest, base_dir, required_artifacts, errors)
     artifacts = _validate_artifacts(manifest, base_dir, required_artifacts, errors)
     return "operator-supplied-production", artifacts
 
@@ -555,6 +682,9 @@ def assess_manifest(manifest: Mapping[str, object], *, base_dir: Path) -> dict[s
         "kind": kind,
         "decision": "fail" if errors else "pass",
         "evidence_scope": evidence_scope,
+        "subject_image_digest": _mapping(
+            manifest.get("provenance"), "assessment provenance", []
+        ).get("image_digest"),
         "manifest_sha256": _canonical_sha256(manifest),
         "artifact_sha256": artifacts,
         "errors": errors,
@@ -648,7 +778,11 @@ def _template(name: str) -> dict[str, object]:
         "kind": "production-rollout",
         "environment": "production",
         "operator_attestation": {"real_evidence": False, "production": False},
-        "reconnect_acceptance": {"decision": "not-run", "assessment_sha256": ""},
+        "reconnect_acceptance": {
+            "decision": "not-run",
+            "assessment_path": "",
+            "assessment_sha256": "",
+        },
         "pre_change": {
             "connection_baseline_captured": False,
             "backup_status": "not-verified",

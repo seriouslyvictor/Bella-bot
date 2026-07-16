@@ -33,6 +33,23 @@ def _artifact(tmp_path: Path, kind: str) -> dict[str, str]:
     return {"kind": kind, "path": path.name, "sha256": digest}
 
 
+def _ticket04_assessment(
+    tmp_path: Path,
+    *,
+    image_digest: str = PATCHED_DIGEST,
+    filename: str = "ticket-04-assessment.json",
+) -> dict[str, str]:
+    path = tmp_path / filename
+    manifest = reconnect_manifest(tmp_path)
+    manifest["provenance"]["image_digest"] = image_digest
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+    path.write_text(json.dumps(assessment, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "assessment_path": path.name,
+        "assessment_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def reconnect_manifest(tmp_path: Path) -> dict[str, Any]:
     samples: list[dict[str, Any]] = [
         {
@@ -218,8 +235,23 @@ def test_reconnect_manifest_rejects_rising_plateau_and_excess_quiet_idle(
 
     errors = _errors_text(assessment)
     assert assessment["decision"] == "fail"
-    assert "rise after plateau_start_cycle" in errors
+    assert "increase after plateau_start_cycle" in errors
     assert "more than 5 idle" in errors
+
+
+def test_reconnect_manifest_rejects_post_plateau_rebound_from_previous_sample(
+    tmp_path: Path,
+) -> None:
+    manifest = reconnect_manifest(tmp_path)
+    samples = manifest["exercise"]["samples"]
+    samples[10]["total"] = 9
+    samples[11]["total"] = 7
+    samples[12]["total"] = 8
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "increase after plateau_start_cycle" in _errors_text(assessment)
 
 
 def test_reconnect_manifest_rejects_tampered_artifact(tmp_path: Path) -> None:
@@ -244,6 +276,7 @@ def test_reconnect_manifest_rejects_duplicate_cycle_sample(tmp_path: Path) -> No
 
 def rollout_manifest(tmp_path: Path) -> dict[str, Any]:
     official_digest = f"sha256:{'b' * 64}"
+    ticket04 = _ticket04_assessment(tmp_path)
     return {
         "schema_version": 1,
         "kind": "production-rollout",
@@ -251,7 +284,7 @@ def rollout_manifest(tmp_path: Path) -> dict[str, Any]:
         "operator_attestation": {"real_evidence": True, "production": True},
         "reconnect_acceptance": {
             "decision": "pass",
-            "assessment_sha256": "c" * 64,
+            **ticket04,
         },
         "pre_change": {
             "connection_baseline_captured": True,
@@ -342,6 +375,32 @@ def test_production_rollout_manifest_passes_with_immutable_recovery_evidence(
     assert assessment["decision"] == "pass"
     assert assessment["errors"] == []
     assert assessment["evidence_scope"] == "operator-supplied-production"
+
+
+def test_rollout_rejects_fabricated_ticket04_assessment_digest(tmp_path: Path) -> None:
+    manifest = rollout_manifest(tmp_path)
+    manifest["reconnect_acceptance"]["assessment_sha256"] = "c" * 64
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "ticket-04 assessment SHA-256 mismatch" in _errors_text(assessment)
+
+
+def test_rollout_rejects_nonpassing_ticket04_assessment_file(tmp_path: Path) -> None:
+    manifest = rollout_manifest(tmp_path)
+    path = tmp_path / manifest["reconnect_acceptance"]["assessment_path"]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["decision"] = "fail"
+    path.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
+    manifest["reconnect_acceptance"]["assessment_sha256"] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "must be a passing reconnect-acceptance" in _errors_text(assessment)
 
 
 @pytest.mark.parametrize(
@@ -441,6 +500,11 @@ def test_custom_build_can_retire_after_official_release_passes_same_gate(
 ) -> None:
     manifest = rollout_manifest(tmp_path)
     digest = f"sha256:{'e' * 64}"
+    official_assessment = _ticket04_assessment(
+        tmp_path,
+        image_digest=digest,
+        filename="official-ticket-04-assessment.json",
+    )
     manifest["official_release_exit"] = {
         "custom_build_retired": True,
         "release_tag": "0.7.3",
@@ -449,7 +513,8 @@ def test_custom_build_can_retire_after_official_release_passes_same_gate(
         "release_source_verified": True,
         "contains_pr117_or_equivalent_fix": True,
         "ticket04_repassed": True,
-        "ticket04_assessment_sha256": "f" * 64,
+        "ticket04_assessment_path": official_assessment["assessment_path"],
+        "ticket04_assessment_sha256": official_assessment["assessment_sha256"],
         "contract_suites_passed": True,
     }
     manifest["artifacts"].append(_artifact(tmp_path, "official-release-verification"))

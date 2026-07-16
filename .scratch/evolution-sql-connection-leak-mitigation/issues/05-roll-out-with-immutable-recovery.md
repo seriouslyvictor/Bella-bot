@@ -32,3 +32,8 @@ fixture is production proof. The maintenance baseline, exact artifact
 promotion, real-message/state checks, observation window, disposable rollback
 rehearsal, production rollout, and final production evidence remain
 operator-controlled and unchecked.
+
+2026-07-16 review follow-up — Rollout evidence now requires the real ticket-04
+assessment path, hashes its bytes, parses a passing reconnect decision with all
+required artifact hashes, and binds the assessment's image digest to the image
+being deployed. No production or official-release checkbox was changed.

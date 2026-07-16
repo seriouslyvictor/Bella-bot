@@ -83,8 +83,9 @@ response is useful liveness evidence but is not database-budget evidence.
    The sample fields are `phase`, `cycle`, `total`, `evogo_auth_total`, and
    `evogo_auth_idle`.
 4. Pick the first observed plateau as `plateau_start_cycle`. The harness
-   requires at least ten subsequent sampled cycles and rejects any increase in
-   total or `evogo_auth` sessions above the first plateau sample.
+   requires at least ten sampled cycles from that point and rejects any
+   increase in total or `evogo_auth` sessions relative to the immediately
+   preceding sample. A rebound such as `9, 7, 8` is not a plateau.
 5. Stop reconnect activity, let the exercise become quiet, and capture an
    `after` sample.
 
@@ -99,6 +100,34 @@ Separately, in the disposable environment, fill Evolution sessions to the
 24-session warning boundary and prove a Bella-role query still succeeds. Close
 those deliberate sessions immediately. Do not continue the reconnect exercise
 at the warning boundary.
+
+### Executable role-limit isolation proof
+
+On a disposable unified stack, stop `evolution-go` and verify it has released
+all sessions. Then run the bounded proof below from the repository root. It
+securely prompts for all three passwords, opens exactly 30 simultaneous
+Evolution sessions, requires the 31st to fail with PostgreSQL SQLSTATE `53300`,
+queries through Bella and the administrator while saturated, and closes every
+proof session in `finally`:
+
+```powershell
+docker compose stop evolution-go
+.\.venv\Scripts\python.exe -m bella.scripts.evolution_connection_limit_proof `
+  --host 127.0.0.1 --port 5432 --prompt-passwords
+$LASTEXITCODE
+```
+
+For a disposable Coolify deployment, stop only the Evolution service in the
+UI, open a terminal in the Bella service, and run:
+
+```sh
+python -m bella.scripts.evolution_connection_limit_proof --prompt-passwords
+echo $?
+```
+
+Do not run this saturation proof in production. Exit `0` is the evidence
+signal; exit `3` means the proof failed closed and PostgreSQL logs/prerequisites
+must be inspected. Retain the output as part of `connection-samples` evidence.
 
 Review the retained Evolution logs over the exact exercise window. Promotion
 is blocked by `too many clients`, unexpected connection refusal, a roughly
@@ -182,8 +211,12 @@ storm, rising count, or message failure occurred. The harness will fail closed.
 
 The rollout manifest requires hashed artifacts for `backup-status`,
 `pre-change-state`, `post-change-state`, `rollback-rehearsal`, plus the four
-ticket-04 evidence categories. Its `reconnect_acceptance.assessment_sha256`
-must identify the real passing ticket-04 assessment used for this artifact.
+ticket-04 evidence categories. Its `reconnect_acceptance.assessment_path` must
+point to the real passing ticket-04 JSON assessment inside the evidence
+directory, and `assessment_sha256` must match that file's bytes. The harness
+parses the file, verifies it is a passing reconnect assessment with the four
+required verified artifact hashes, and requires its assessed image digest to
+match the rollout image. A plausible-looking hex string alone cannot pass.
 
 ### Immutable emergency rollback
 
@@ -213,7 +246,7 @@ record:
 - reviewed source evidence that the release contains pull request #117 or an
   equivalent fix;
 - a new passing ticket-04 run against that exact digest and its assessment
-  SHA-256;
+  file path and SHA-256;
 - passing deployment and contract suites; and
 - a hashed `official-release-verification` artifact.
 

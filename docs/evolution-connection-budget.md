@@ -6,8 +6,10 @@ warning threshold. This check observes only the `evolution` role and excludes
 its own observer connection.
 
 The check reports each group by database, state, application name, and client
-address or hostname, followed by the total, configured role limit, threshold,
-and trend. It never prints the connection string or password. The database
+address or hostname, followed by the total, actual `pg_roles.rolconnlimit`,
+configured expected limit, threshold, and trend. A mismatch fails closed with
+exit `3`; reconcile the retained role before trusting the budget. It never
+prints the connection string or password. The database
 password can be supplied by `EVOLUTION_CONNECTION_BUDGET_DSN`,
 `POSTGRES_AUTH_DB`, or `EVOLUTION_DB_PASSWORD`; the commands below use a secure
 interactive prompt so the password does not enter shell history.
@@ -44,9 +46,9 @@ The exit status is the automation contract:
   unavailable. At the role limit, the observer connection can itself be
   refused, so treat an unexpected `3` during reconnect trouble as an incident.
 
-For JSON output, add `--json`. The document contains `status`, `total`,
-`limit`, `threshold`, `trend`, and the grouped samples. The process exit status
-remains authoritative.
+For JSON output, add `--json`. The document contains `status`, `total`, the
+observed `limit`, `configured_limit`, `threshold`, `trend`, and grouped samples.
+The process exit status remains authoritative.
 
 ## Check reconnect growth
 
@@ -64,8 +66,10 @@ a plateau. A total that grows on every successive sample is reported as
 on either warning condition; do not keep reconnecting to see whether the role
 limit eventually stops it.
 
-The default role limit shown by the command is read from
-`EVOLUTION_DB_CONNECTION_LIMIT` and defaults to `30`. The warning threshold is
+The command always reads the actual `evolution` role limit from PostgreSQL.
+`EVOLUTION_DB_CONNECTION_LIMIT` is only the expected deployment value and
+defaults to `30` when it is absent, including local and Coolify terminal runs.
+Any drift is an error, not a new implicit budget. The warning threshold is
 intentionally fixed at `24` for the current single-instance topology. Adding an
 Evolution instance or changing the role limit requires a new measured budget
 and reconnect test; do not scale this threshold by guesswork.

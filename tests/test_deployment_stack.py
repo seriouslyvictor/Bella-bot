@@ -6,6 +6,10 @@ from typing import Any, cast
 
 import yaml
 
+from bella.scripts.evolution_connection_policy import (
+    ROLE_CONNECTION_LIMIT,
+    ROLE_IDLE_SESSION_TIMEOUT,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 EVOLUTION_IMAGE = (
@@ -112,10 +116,10 @@ def test_evolution_role_guardrails_are_part_of_the_stack_contract() -> None:
     postgres = _load_compose("docker-compose.yml")["services"]["postgres"]
 
     assert postgres["environment"]["EVOLUTION_DB_CONNECTION_LIMIT"] == (
-        "${EVOLUTION_DB_CONNECTION_LIMIT:-30}"
+        f"${{EVOLUTION_DB_CONNECTION_LIMIT:-{ROLE_CONNECTION_LIMIT}}}"
     )
     assert postgres["environment"]["EVOLUTION_DB_IDLE_SESSION_TIMEOUT"] == (
-        "${EVOLUTION_DB_IDLE_SESSION_TIMEOUT:-5min}"
+        f"${{EVOLUTION_DB_IDLE_SESSION_TIMEOUT:-{ROLE_IDLE_SESSION_TIMEOUT}}}"
     )
 
 
@@ -145,8 +149,19 @@ def test_local_overlay_only_publishes_loopback_ports() -> None:
 
 def test_postgres_initializer_is_lf_only_and_creates_all_isolated_databases() -> None:
     script = (ROOT / "deploy/postgres/init-databases.sh").read_bytes()
+    text = script.decode("utf-8")
 
     assert b"\r\n" not in script
+    # Shell and Compose cannot import Python; this binds their explicit
+    # deployment defaults to the executable policy used by both validators.
+    assert (
+        f'EVOLUTION_DB_CONNECTION_LIMIT="${{EVOLUTION_DB_CONNECTION_LIMIT:-'
+        f'{ROLE_CONNECTION_LIMIT}}}"'
+    ) in text
+    assert (
+        f'EVOLUTION_DB_IDLE_SESSION_TIMEOUT="${{EVOLUTION_DB_IDLE_SESSION_TIMEOUT:-'
+        f'{ROLE_IDLE_SESSION_TIMEOUT}}}"'
+    ) in text
     assert b"CREATE ROLE bella" in script
     assert b"CREATE ROLE evolution" in script
     assert b"EVOLUTION_DB_CONNECTION_LIMIT" in script

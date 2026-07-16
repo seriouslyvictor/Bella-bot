@@ -29,3 +29,9 @@ suite passed, and `docs/deploy.md` now records retained-volume maintenance and
 verification. Real fresh/retained-volume reconciliation, timeout inheritance,
 state/ACL preservation, and budget-exhaustion isolation still require an
 operator-run disposable PostgreSQL exercise.
+
+2026-07-16 review follow-up — Added the executable, fail-closed
+`bella.scripts.evolution_connection_limit_proof` path. Unit tests prove its
+30-session hold, SQLSTATE `53300` requirement for the 31st connection,
+Bella/admin queries, and unconditional cleanup. The environmental checkbox
+remains open until an operator runs it on a disposable real PostgreSQL stack.

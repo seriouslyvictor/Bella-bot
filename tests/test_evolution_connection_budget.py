@@ -7,14 +7,19 @@ from typing import Any
 import pytest
 
 from bella.scripts import evolution_connection_budget
+from bella.scripts.evolution_connection_policy import (
+    ROLE_CONNECTION_LIMIT,
+    WARNING_THRESHOLD,
+)
 
 
 Row = tuple[str, str, str, str, int]
 
 
 class FakeCursor:
-    def __init__(self, rows: Sequence[Row]) -> None:
+    def __init__(self, rows: Sequence[Row], role_limit: int) -> None:
         self._rows = rows
+        self._role_limit = role_limit
 
     def __enter__(self) -> "FakeCursor":
         return self
@@ -28,10 +33,14 @@ class FakeCursor:
     def fetchall(self) -> Sequence[Row]:
         return self._rows
 
+    def fetchone(self) -> tuple[int, str]:
+        return self._role_limit, "evolution"
+
 
 class FakeConnection:
-    def __init__(self, rows: Sequence[Row]) -> None:
+    def __init__(self, rows: Sequence[Row], role_limit: int) -> None:
         self._rows = rows
+        self._role_limit = role_limit
 
     def __enter__(self) -> "FakeConnection":
         return self
@@ -40,15 +49,17 @@ class FakeConnection:
         return None
 
     def cursor(self) -> FakeCursor:
-        return FakeCursor(self._rows)
+        return FakeCursor(self._rows, self._role_limit)
 
 
-def sequence_connector(samples: Sequence[Sequence[Row]]) -> Any:
+def sequence_connector(
+    samples: Sequence[Sequence[Row]], *, role_limit: int = ROLE_CONNECTION_LIMIT
+) -> Any:
     remaining = iter(samples)
 
     @contextmanager
     def connect(dsn: str, *, connect_timeout: int) -> Iterator[FakeConnection]:
-        yield FakeConnection(next(remaining))
+        yield FakeConnection(next(remaining), role_limit)
 
     return connect
 
@@ -60,14 +71,20 @@ def run(
     *,
     argv: Sequence[str] = (),
     environ: Mapping[str, str] | None = None,
+    role_limit: int = ROLE_CONNECTION_LIMIT,
 ) -> tuple[int, str, str]:
-    monkeypatch.setattr(evolution_connection_budget, "connect", sequence_connector(samples))
+    monkeypatch.setattr(
+        evolution_connection_budget,
+        "connect",
+        sequence_connector(samples, role_limit=role_limit),
+    )
     code = evolution_connection_budget.main(
         list(argv),
         environ=environ
-        or {
+        if environ is not None
+        else {
             "EVOLUTION_CONNECTION_BUDGET_DSN": "postgresql://evolution:secret@postgres/evogo_auth",
-            "EVOLUTION_DB_CONNECTION_LIMIT": "30",
+            "EVOLUTION_DB_CONNECTION_LIMIT": str(ROLE_CONNECTION_LIMIT),
         },
         sleep=lambda seconds: None,
     )
@@ -89,7 +106,11 @@ def test_low_count_is_within_budget_and_reports_group_identity(
     assert "idle" in stdout
     assert "evolution-go" in stdout
     assert "172.20.0.4" in stdout
-    assert "total=7 limit=30 threshold=24 status=OK" in stdout
+    assert (
+        f"total=7 limit={ROLE_CONNECTION_LIMIT} threshold={WARNING_THRESHOLD} status=OK"
+        in stdout
+    )
+    assert f"configured_limit={ROLE_CONNECTION_LIMIT}" in stdout
     assert stderr == ""
 
 
@@ -154,6 +175,43 @@ def test_json_mode_exposes_a_machine_readable_status(
     assert code == 2
     assert '"status": "warning"' in stdout
     assert '"threshold": 24' in stdout
+    assert '"configured_limit": 30' in stdout
+
+
+def test_role_limit_is_observed_from_postgres_when_environment_is_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, stdout, stderr = run(
+        monkeypatch,
+        capsys,
+        [grouped_rows(7)],
+        environ={
+            "EVOLUTION_CONNECTION_BUDGET_DSN": (
+                "postgresql://evolution:secret@postgres/evogo_auth"
+            )
+        },
+    )
+
+    assert code == 0
+    assert "limit=30" in stdout
+    assert "configured_limit=30" in stdout
+    assert stderr == ""
+
+
+def test_role_limit_drift_fails_safely_and_reports_both_values(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, stdout, stderr = run(
+        monkeypatch,
+        capsys,
+        [grouped_rows(7)],
+        role_limit=29,
+    )
+
+    assert code == 3
+    assert stdout == ""
+    assert "actual role limit 29" in stderr
+    assert "configured expected limit 30" in stderr
 
 
 def test_operator_can_enter_the_database_password_without_echoing_it(

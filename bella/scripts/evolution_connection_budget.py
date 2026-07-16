@@ -20,9 +20,12 @@ from typing import Any, TextIO
 from psycopg import connect as connect
 from psycopg.conninfo import make_conninfo
 
+from bella.scripts.evolution_connection_policy import (
+    EVOLUTION_ROLE,
+    ROLE_CONNECTION_LIMIT,
+    WARNING_THRESHOLD,
+)
 
-WARNING_THRESHOLD = 24
-DEFAULT_ROLE_LIMIT = 30
 UNAVAILABLE_EXIT = 3
 WARNING_EXIT = 2
 
@@ -38,6 +41,12 @@ WHERE usename = 'evolution'
   AND pid <> pg_backend_pid()
 GROUP BY datname, state, application_name, client_addr, client_hostname
 ORDER BY database, state, application, client
+"""
+
+ROLE_POLICY_QUERY = """
+SELECT rolconnlimit::integer, current_user::text
+FROM pg_roles
+WHERE rolname = %s
 """
 
 
@@ -119,20 +128,27 @@ def _connection_dsn(
     )
 
 
-def _role_limit(environ: Mapping[str, str]) -> int:
-    raw = environ.get("EVOLUTION_DB_CONNECTION_LIMIT", str(DEFAULT_ROLE_LIMIT))
+def _configured_role_limit(environ: Mapping[str, str]) -> int:
+    raw = environ.get("EVOLUTION_DB_CONNECTION_LIMIT", str(ROLE_CONNECTION_LIMIT))
     limit = int(raw)
     if limit < 1:
         raise ValueError("EVOLUTION_DB_CONNECTION_LIMIT must be a positive integer")
     return limit
 
 
-def _sample(dsn: str) -> list[SessionGroup]:
+def _sample(dsn: str) -> tuple[list[SessionGroup], int]:
     with connect(dsn, connect_timeout=5) as connection:
         with connection.cursor() as cursor:
+            cursor.execute(ROLE_POLICY_QUERY, (EVOLUTION_ROLE,))
+            role_row = cursor.fetchone()
+            if role_row is None:
+                raise RuntimeError("Evolution role does not exist")
+            role_limit = int(role_row[0])
+            if str(role_row[1]) != EVOLUTION_ROLE:
+                raise RuntimeError("budget observer must connect as Evolution role")
             cursor.execute(GROUPED_SESSIONS_QUERY)
             rows = cursor.fetchall()
-    return [
+    groups = [
         SessionGroup(
             database=str(row[0]),
             state=str(row[1]),
@@ -142,6 +158,7 @@ def _sample(dsn: str) -> list[SessionGroup]:
         )
         for row in rows
     ]
+    return groups, role_limit
 
 
 def _is_monotonic_growth(totals: Sequence[int]) -> bool:
@@ -154,6 +171,7 @@ def _write_human(
     snapshots: Sequence[Snapshot],
     *,
     limit: int,
+    configured_limit: int,
     warning: bool,
     monotonic_growth: bool,
     stdout: TextIO,
@@ -178,7 +196,7 @@ def _write_human(
     last_total = snapshots[-1].total
     print(
         f"total={last_total} limit={limit} threshold={WARNING_THRESHOLD} "
-        f"status={status}",
+        f"status={status} configured_limit={configured_limit}",
         file=stdout,
     )
     print(
@@ -191,6 +209,7 @@ def _write_json(
     snapshots: Sequence[Snapshot],
     *,
     limit: int,
+    configured_limit: int,
     warning: bool,
     monotonic_growth: bool,
     stdout: TextIO,
@@ -199,6 +218,7 @@ def _write_json(
         "status": "warning" if warning else "ok",
         "total": snapshots[-1].total,
         "limit": limit,
+        "configured_limit": configured_limit,
         "threshold": WARNING_THRESHOLD,
         "trend": "monotonic_growth" if monotonic_growth else "stable_or_mixed",
         "samples": [asdict(snapshot) for snapshot in snapshots],
@@ -241,7 +261,7 @@ def main(
         )
         return UNAVAILABLE_EXIT
     try:
-        limit = _role_limit(current_environ)
+        configured_limit = _configured_role_limit(current_environ)
     except (TypeError, ValueError):
         print(
             "ERROR: EVOLUTION_DB_CONNECTION_LIMIT must be a positive integer.",
@@ -250,11 +270,16 @@ def main(
         return UNAVAILABLE_EXIT
 
     snapshots: list[Snapshot] = []
+    observed_limit: int | None = None
     try:
         for sample_number in range(1, args.samples + 1):
             if sample_number > 1:
                 sleep(args.interval)
-            groups = _sample(dsn)
+            groups, sample_limit = _sample(dsn)
+            if observed_limit is None:
+                observed_limit = sample_limit
+            elif sample_limit != observed_limit:
+                raise RuntimeError("Evolution role limit changed while sampling")
             total = sum(group.sessions for group in groups)
             previous = snapshots[-1].total if snapshots else None
             snapshots.append(
@@ -275,13 +300,27 @@ def main(
         )
         return UNAVAILABLE_EXIT
 
+    if observed_limit is None:
+        print("ERROR: PostgreSQL returned no Evolution role policy.", file=stderr)
+        return UNAVAILABLE_EXIT
+    if observed_limit != configured_limit:
+        print(
+            "ERROR: PostgreSQL Evolution role policy drift: "
+            f"actual role limit {observed_limit}; configured expected limit "
+            f"{configured_limit}. Reconcile the retained role before relying on "
+            "this budget.",
+            file=stderr,
+        )
+        return UNAVAILABLE_EXIT
+
     totals = [snapshot.total for snapshot in snapshots]
     monotonic_growth = _is_monotonic_growth(totals)
     warning = any(total >= WARNING_THRESHOLD for total in totals) or monotonic_growth
     if args.json:
         _write_json(
             snapshots,
-            limit=limit,
+            limit=observed_limit,
+            configured_limit=configured_limit,
             warning=warning,
             monotonic_growth=monotonic_growth,
             stdout=stdout,
@@ -289,7 +328,8 @@ def main(
     else:
         _write_human(
             snapshots,
-            limit=limit,
+            limit=observed_limit,
+            configured_limit=configured_limit,
             warning=warning,
             monotonic_growth=monotonic_growth,
             stdout=stdout,
