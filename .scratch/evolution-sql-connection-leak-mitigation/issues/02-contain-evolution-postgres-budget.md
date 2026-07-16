@@ -1,0 +1,20 @@
+# 02 — Contain Evolution's PostgreSQL connection budget
+
+**What to build:** A PostgreSQL safety boundary that prevents Evolution GO from exhausting the shared cluster even if its application-side pool regresses. Fresh and retained stacks must give the existing non-superuser `evolution` role a measured connection budget and role-only idle-session reclamation while leaving Bella's role and cluster-wide capacity unchanged.
+
+**Blocked by:** None — can start immediately.
+
+**Status:** ready-for-agent
+
+- [ ] The stack exposes validated Evolution database guardrails with defaults of 30 concurrent connections and a five-minute idle-session timeout
+- [ ] The dedicated `evolution` login role remains non-superuser and receives `CONNECTION LIMIT 30`
+- [ ] The five-minute `idle_session_timeout` applies only to the `evolution` role and does not change Bella, the PostgreSQL administrator, or cluster-wide defaults
+- [ ] The global `max_connections` and `idle_in_transaction_session_timeout` remain unchanged
+- [ ] Database reconciliation applies the role password, grants, connection limit, and timeout idempotently on a fresh volume
+- [ ] Rerunning reconciliation on a retained volume applies the guardrails without recreating databases, changing owners, losing Evolution state, or altering Bella's grants
+- [ ] New Evolution sessions inherit the timeout after the required Evolution-only restart
+- [ ] A disposable-cluster test can fill the Evolution role's budget and proves that the next Evolution connection is rejected while Bella and administrator queries still succeed
+- [ ] Invalid connection-limit or timeout configuration fails safely before unsafe SQL is executed
+- [ ] The deployment contract tests require the guardrail configuration and continue to prove database-role isolation
+- [ ] Operator guidance explains how to stop Evolution, reconcile a retained volume, restart Evolution, and verify the applied role attributes
+- [ ] `DATABASE_SAVE_MESSAGES=false` remains unchanged and is documented as unrelated to the authentication-store leak
