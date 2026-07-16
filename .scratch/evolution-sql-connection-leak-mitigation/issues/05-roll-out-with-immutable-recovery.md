@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Prove bounded reconnect and recovery behavior.
 
-**Status:** ready-for-agent
+Status: ready-for-human
 
 - [ ] The maintenance window records the pre-change Evolution connection baseline, backup status, official 0.7.2 image digest, instance identity, license state, webhook, and pairing status
 - [ ] Evolution is stopped before retained-volume reconciliation so existing leaked sessions are cleared and new sessions inherit the role policy
@@ -17,6 +17,18 @@
 - [ ] The emergency rollback target is the recorded immutable pre-change digest, never `latest`
 - [ ] Rollback keeps the PostgreSQL connection limit and idle timeout, is identified as temporary because official 0.7.2 still leaks, and includes active monitoring plus planned Evolution-only restarts
 - [ ] The rollback procedure is rehearsed in a disposable environment and the patched runtime is restored successfully afterward
-- [ ] Operator documentation records promotion blockers, incident evidence to capture, and the rule to restart Evolution rather than PostgreSQL
-- [ ] The custom build is retired only after an official release is verified to contain pull request #117 or an equivalent fix, passes ticket 04's tests, and is pinned by tag and manifest digest
+- [x] Operator documentation records promotion blockers, incident evidence to capture, and the rule to restart Evolution rather than PostgreSQL
+- [x] The custom build is retired only after an official release is verified to contain pull request #117 or an equivalent fix, passes ticket 04's tests, and is pinned by tag and manifest digest
 - [ ] The final deployment and contract test suites pass, and no `latest` reference remains in runtime configuration or recovery guidance
+
+## Comments
+
+2026-07-16 — `docs/evolution-reconnect-rollout.md` and the fail-closed rollout
+assessment implement maintenance ordering, immutable pre-change and patched
+digests, rollback guardrail retention, temporary known-leaking rollback rules,
+promotion blockers, and official-release exit criteria. The focused 57-test
+suite passed and rejects mutable/unsafe synthetic evidence, but no synthetic
+fixture is production proof. The maintenance baseline, exact artifact
+promotion, real-message/state checks, observation window, disposable rollback
+rehearsal, production rollout, and final production evidence remain
+operator-controlled and unchecked.

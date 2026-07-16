@@ -1,0 +1,110 @@
+From 4cc635dd460f70c36ba83285ecbb34589790572f Mon Sep 17 00:00:00 2001
+From: Ay0rus <160690300+Ay0rus@users.noreply.github.com>
+Date: Sat, 4 Jul 2026 00:13:12 -0300
+Subject: [PATCH] fix(whatsmeow): reuse a single capped sqlstore container
+ instead of one per StartClient
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+StartClient() called sqlstore.New() on every connect AND every reconnect, each
+opening a brand-new *sql.DB with MaxOpenConns=0 (unlimited) and ConnMaxLifetime=0
+(never expires), and the container was never closed. With instances reconnecting
+in a loop (QR expiry, network blips, CONNECT_ON_STARTUP) this leaks one connection
+pool per attempt and eventually exhausts Postgres ("sorry, too many clients
+already").
+
+Create the auth-store container once (sync.Once) with a bounded pool via
+sqlstore.NewWithDB(), and reuse it across all clients — whatsmeow's container is
+designed to hold multiple devices. Direct DB connection, capped pool.
+---
+ pkg/whatsmeow/service/whatsmeow.go | 68 +++++++++++++++++++++---------
+ 1 file changed, 49 insertions(+), 19 deletions(-)
+
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index 78ec6c17..46915812 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -279,6 +279,53 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
+ 	return nil
+ }
+ 
++// --- PATCH leak-fix (#269): container/pool UNICO e capado pro store do whatsmeow ---
++// Antes, cada StartClient (conectar E cada reconexao) chamava sqlstore.New(), abrindo
++// um *sql.DB novo sem cap e nunca fechado -> leak que saturava o Postgres do evogo_auth.
++// Agora e um container compartilhado, criado uma vez, com pool limitado e conexao direta.
++var (
++	sharedAuthContainer     *sqlstore.Container
++	sharedAuthContainerErr  error
++	sharedAuthContainerOnce sync.Once
++)
++
++func (w whatsmeowService) getAuthContainer() (*sqlstore.Container, error) {
++	sharedAuthContainerOnce.Do(func() {
++		var dbLog waLog.Logger
++		if w.config.WaDebug != "" {
++			dbLog = waLog.Stdout("Database", w.config.WaDebug, true)
++		}
++		var dialect, address string
++		if w.config.PostgresAuthDB != "" {
++			dialect, address = "postgres", w.config.PostgresAuthDB
++		} else {
++			dialect = "sqlite"
++			address = fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
++		}
++		db, err := sql.Open(dialect, address)
++		if err != nil {
++			sharedAuthContainerErr = fmt.Errorf("failed to open auth database: %w", err)
++			return
++		}
++		if dialect == "postgres" {
++			db.SetMaxOpenConns(20)
++			db.SetMaxIdleConns(5)
++			db.SetConnMaxLifetime(5 * time.Minute)
++			db.SetConnMaxIdleTime(2 * time.Minute)
++		} else {
++			db.SetMaxOpenConns(1)
++		}
++		container := sqlstore.NewWithDB(db, dialect, dbLog)
++		if err := container.Upgrade(context.Background()); err != nil {
++			_ = db.Close()
++			sharedAuthContainerErr = fmt.Errorf("failed to upgrade auth database: %w", err)
++			return
++		}
++		sharedAuthContainer = container
++	})
++	return sharedAuthContainer, sharedAuthContainerErr
++}
++
+ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 
+ 	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Starting websocket connection to Whatsapp for user '%s'", cd.Instance.Id)
+@@ -293,26 +340,9 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 	}
+ 
+ 	var container *sqlstore.Container
+-
+-	if w.config.WaDebug != "" {
+-		dbLog := waLog.Stdout("Database", w.config.WaDebug, true)
+-		if w.config.PostgresAuthDB != "" {
+-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, dbLog)
+-		} else {
+-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
+-		}
+-	} else {
+-		if w.config.PostgresAuthDB != "" {
+-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, nil)
+-		} else {
+-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, nil)
+-		}
+-	}
+-
++	container, err = w.getAuthContainer()
+ 	if err != nil {
+-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to create container: %v", cd.Instance.Id, err)
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to get auth container: %v", cd.Instance.Id, err)
+ 		return
+ 	}
+ 

@@ -1,0 +1,28 @@
+From 03289559d547911d92ad58837db98faeb0c5fd8e Mon Sep 17 00:00:00 2001
+From: Guilherme Gasparotti Cassettari <guizaocassettari@gmail.com>
+Date: Wed, 15 Jul 2026 10:19:11 -0300
+Subject: [PATCH] Update pkg/whatsmeow/service/auth_container_retry_test.go
+
+Co-authored-by: sourcery-ai[bot] <58596630+sourcery-ai[bot]@users.noreply.github.com>
+---
+ pkg/whatsmeow/service/auth_container_retry_test.go | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pkg/whatsmeow/service/auth_container_retry_test.go b/pkg/whatsmeow/service/auth_container_retry_test.go
+index 762c575..580a22f 100644
+--- a/pkg/whatsmeow/service/auth_container_retry_test.go
++++ b/pkg/whatsmeow/service/auth_container_retry_test.go
+@@ -29,6 +29,13 @@ func TestGetAuthContainerRetryAndReuse(t *testing.T) {
+ 	if _, err := bad.getAuthContainer(); err == nil {
+ 		t.Fatal("esperava erro com diretório inexistente, veio nil")
+ 	}
++	// Falha não deve ser memorizada no singleton
++	sharedAuthContainerMu.Lock()
++	if sharedAuthContainer != nil {
++		sharedAuthContainerMu.Unlock()
++		t.Fatalf("failed container should not be memoized (sharedAuthContainer = %#v)", sharedAuthContainer)
++	}
++	sharedAuthContainerMu.Unlock()
+ 
+ 	// Sucesso: exPath válido com o subdiretório dbdata esperado pelo DSN.
+ 	goodPath := t.TempDir()

@@ -11,6 +11,8 @@ services:
       POSTGRES_DB: postgres
       BELLA_DB_PASSWORD: ${BELLA_DB_PASSWORD:?Set BELLA_DB_PASSWORD}
       EVOLUTION_DB_PASSWORD: ${EVOLUTION_DB_PASSWORD:?Set EVOLUTION_DB_PASSWORD}
+      EVOLUTION_DB_CONNECTION_LIMIT: ${EVOLUTION_DB_CONNECTION_LIMIT:-30}
+      EVOLUTION_DB_IDLE_SESSION_TIMEOUT: ${EVOLUTION_DB_IDLE_SESSION_TIMEOUT:-5min}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     configs:
@@ -30,8 +32,11 @@ services:
     stop_grace_period: 30s
 
   evolution-go:
-    # Frozen at 0.7.1 and at that tag's multi-platform manifest digest.
-    image: evoapicloud/evolution-go:0.7.1@sha256:e1bcb07dea7b130413cf2571b60e11144994fc6a81afdd37a9d2cc4ff67466bf
+    # Bella-owned 0.7.2 backport containing only upstream PR #117's three commits.
+    image: bella/evolution-go:0.7.2-pr117-0328955
+    build:
+      context: .
+      dockerfile: deploy/evolution/Dockerfile
     restart: unless-stopped
     environment:
       SERVER_PORT: "8080"
@@ -40,7 +45,7 @@ services:
       POSTGRES_AUTH_DB: postgresql://evolution:${EVOLUTION_DB_PASSWORD:?Set EVOLUTION_DB_PASSWORD}@postgres:5432/evogo_auth?sslmode=disable
       POSTGRES_USERS_DB: postgresql://evolution:${EVOLUTION_DB_PASSWORD:?Set EVOLUTION_DB_PASSWORD}@postgres:5432/evogo_users?sslmode=disable
       DATABASE_SAVE_MESSAGES: ${EVOLUTION_DATABASE_SAVE_MESSAGES:-false}
-      # These are the names read by the 0.7.1 binary. Its example Compose file
+      # These are the names read by the Evolution GO binary. Its example Compose file
       # still uses the older WADEBUG/LOGTYPE spellings.
       DEBUG_ENABLED: ${EVOLUTION_DEBUG_LEVEL:-INFO}
       LOG_TYPE: console
@@ -83,9 +88,9 @@ services:
       BELLA_INTERNAL_URL: http://bella:8000
       BELLA_DATABASE_URL: postgresql://bella:${BELLA_DB_PASSWORD:?Set BELLA_DB_PASSWORD}@postgres:5432/bella
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:?Set EVOLUTION_API_KEY to the instance token}
-      # Evolution Go 0.7.1 identifies the instance by EVOLUTION_API_KEY. Bella
+      # Evolution GO identifies the instance by EVOLUTION_API_KEY. Bella
       # retains this header for compatibility, but the value is not consulted.
-      EVOLUTION_INSTANCE_ID: ${EVOLUTION_INSTANCE_ID:-unused-by-evolution-go-0.7.1}
+      EVOLUTION_INSTANCE_ID: ${EVOLUTION_INSTANCE_ID:-unused-by-evolution-go}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}
       ADMIN_CONTACT: ${ADMIN_CONTACT:?Set ADMIN_CONTACT to the owner WhatsApp number}
       BELLA_DISPLAY_NAME: ${BELLA_DISPLAY_NAME:-Bella}

@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Build the patched Evolution GO 0.7.2 runtime; 02 — Contain Evolution's PostgreSQL connection budget; 03 — Expose the Evolution connection-budget check.
 
-**Status:** ready-for-agent
+Status: ready-for-human
 
 - [ ] The test environment verifies the patched image provenance, the non-superuser Evolution role, the 30-session role limit, and the five-minute role timeout before exercising reconnects
 - [ ] A licensed disposable or staging instance completes at least 30 start/reconnect cycles through Evolution's public behavior
@@ -18,4 +18,15 @@
 - [ ] An Evolution-only restart and a normal Compose redeploy preserve the paired instance, license state, webhook, authentication data, and messaging behavior
 - [ ] A real WhatsApp DM receives Bella's reply before and after the reconnect/restart exercise
 - [ ] Connection samples, relevant logs, image identity, and message results are retained as reviewable acceptance evidence
-- [ ] Any pairing loss, API/webhook regression, timeout error, rising connection trend, or retry storm blocks production promotion
+- [x] Any pairing loss, API/webhook regression, timeout error, rising connection trend, or retry storm blocks production promotion
+
+## Comments
+
+2026-07-16 — The fail-closed evidence harness and dedicated reconnect runbook
+encode provenance/role preflight, at least 30 public reconnects, plateau and
+pool ceilings, recovery, state/message checks, artifact hashes, and promotion
+blockers. Synthetic positive and negative manifest tests passed as part of the
+57-test focused suite; they intentionally are not acceptance evidence. Every
+environmental checkbox remains open until an authorized operator runs the
+licensed disposable/staging WhatsApp and real-PostgreSQL exercise and retains
+the required artifacts.

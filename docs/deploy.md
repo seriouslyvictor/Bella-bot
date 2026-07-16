@@ -1,8 +1,8 @@
 # Unified Docker stack: local Docker Engine and Coolify
 
-`docker-compose.yml` is the production deployment artifact. It runs Bella,
-Evolution Go 0.7.1, and PostgreSQL 15 in one Compose project with stable
-service DNS and no VPS-specific external network.
+`docker-compose.yml` is the production deployment artifact. It runs Bella, the
+Bella-owned Evolution GO `0.7.2-pr117` backport, and PostgreSQL 15 in one
+Compose project with stable service DNS and no VPS-specific external network.
 
 The production file publishes no host ports. `docker-compose.local.yml` only
 adds loopback bindings for local development; it does not change the images,
@@ -13,7 +13,7 @@ volumes, dependencies, health checks, or internal URLs used on the VPS.
 | Service | Runtime | Internal address | Persistent state |
 |---|---|---|---|
 | `bella` | Built from this repo with a digest-pinned Python base and `requirements.lock` | `http://bella:8000` | `bella` database in `postgres_data` |
-| `evolution-go` | `evoapicloud/evolution-go:0.7.1`, also pinned by manifest digest | `http://evolution-go:8080` | `evogo_auth` and `evogo_users` in `postgres_data` |
+| `evolution-go` | Built as `bella/evolution-go:0.7.2-pr117-0328955` from pinned Evolution GO 0.7.2 source plus the three reviewed PR #117 patches | `http://evolution-go:8080` | `evogo_auth` and `evogo_users` in `postgres_data` |
 | `postgres` | `postgres:15-alpine`, also pinned by manifest digest | `postgres:5432` | `postgres_data` |
 
 The default bridge network is project-scoped and created by Compose. Postgres
@@ -27,11 +27,40 @@ On a new Postgres volume, `deploy/postgres/init-databases.sh` creates isolated
 cannot connect to Evolution's databases, and Evolution cannot connect to
 Bella's. This replaces the old manual `provision_database` operator script.
 
-Image digests and `requirements.lock` are deliberate deployment inputs. An
-upgrade changes the human-readable tag and digest together, regenerates the
-hash lock with Python 3.12 (`pip-compile --generate-hashes --strip-extras
---output-file=requirements.lock pyproject.toml`), and repeats the full local
-smoke test before Coolify deploys it.
+The `evolution` role remains non-superuser and has two role-only circuit
+breakers: `CONNECTION LIMIT 30` and `idle_session_timeout = 5min`. They do not
+change Bella's role, the administrator role, the cluster-wide
+`max_connections`, or `idle_in_transaction_session_timeout`. The application
+pool fix remains primary; `DATABASE_SAVE_MESSAGES=false` does not bypass the
+WhatsMeow authentication store and is not a connection-leak mitigation.
+
+Image digests, checksummed Evolution source and patches, and
+`requirements.lock` are deliberate deployment inputs. The Evolution build
+pins both base images by digest, verifies the source archive checksum, and
+fails if any reviewed patch no longer applies exactly. Record the produced
+image content digest during acceptance; the local image tag is an explicit
+build identity, not a substitute for artifact evidence. The current empty-cache
+`linux/amd64` build record is in
+[`deploy/evolution/BUILD-EVIDENCE.md`](../deploy/evolution/BUILD-EVIDENCE.md);
+it records a local image ID, not an authenticated registry manifest digest. An
+upgrade changes the human-readable identity and immutable inputs together,
+regenerates the hash lock with Python 3.12 (`pip-compile --generate-hashes
+--strip-extras --output-file=requirements.lock pyproject.toml`), and repeats the
+applicable acceptance tests before Coolify deploys it.
+
+## Evolution connection-leak controls
+
+Use [the connection-budget check](evolution-connection-budget.md) for the safe
+local and Coolify commands, repeated sampling, and incident response. For this
+single-instance topology, 24 Evolution sessions is a warning. A count at or
+above 24, or a count that rises on every reconnect sample, means stop reconnect
+attempts, save the budget output and Evolution logs, and restart only
+`evolution-go`. Do not restart PostgreSQL or raise its global connection limit.
+
+Use [the reconnect and immutable rollout runbook](evolution-reconnect-rollout.md)
+for licensed staging acceptance, evidence capture, maintenance order,
+production promotion, digest-qualified rollback, and the eventual return to an
+official release. A production rollout is not approved by Compose health alone.
 
 ## Required configuration
 
@@ -43,13 +72,15 @@ in the resource's environment panel instead. `.env` is gitignored.
 | `POSTGRES_PASSWORD` | Password for the stack-local Postgres administrator. |
 | `BELLA_DB_PASSWORD` | Password for the role restricted to the `bella` database. Use a URL-safe value because it is embedded in Bella's DSN. |
 | `EVOLUTION_DB_PASSWORD` | Password for the role restricted to `evogo_auth` and `evogo_users`. Use a URL-safe value because it is embedded in Evolution's DSNs. |
+| `EVOLUTION_DB_CONNECTION_LIMIT` | Evolution role connection budget. Defaults to `30`; changing it is a capacity decision requiring the reconnect test. |
+| `EVOLUTION_DB_IDLE_SESSION_TIMEOUT` | Evolution role-only idle-session circuit breaker. Defaults to `5min`; changing it requires the timeout-recovery test. |
 | `EVOLUTION_GLOBAL_API_KEY` | Evolution administrative/Manager key. Bella never receives it. |
 | `EVOLUTION_API_KEY` | Token assigned to Bella's Evolution instance. Bella uses it on instance/send/user routes and validates it on inbound webhook payloads. It is not the global key. |
 | `ANTHROPIC_API_KEY` | Claude credential for Bella's Scope Gate and answerer. |
 | `ADMIN_CONTACT` | Owner WhatsApp number that receives handoff notifications. |
 
-`EVOLUTION_INSTANCE_ID` can initially keep the documented placeholder.
-Evolution Go 0.7.1 identifies the instance from `EVOLUTION_API_KEY` and ignores
+`EVOLUTION_INSTANCE_ID` can initially keep the documented placeholder. The
+patched runtime identifies the instance from `EVOLUTION_API_KEY` and ignores
 the `instanceId` header; replace it with the UUID later for operator clarity.
 
 The Compose file owns `EVOLUTION_URL`, `BELLA_INTERNAL_URL`, and
@@ -110,6 +141,25 @@ The idempotent script uses the new container environment and local socket
 authentication to reconcile all three roles, after which the health check can
 recover.
 
+### Reconcile Evolution role guardrails on a retained volume
+
+The official Postgres entrypoint does not rerun initialization scripts on a
+retained volume. During a maintenance window, stop Evolution before applying
+the role policy so old leaked sessions are closed and all new sessions inherit
+the timeout:
+
+```text
+docker compose stop evolution-go
+docker compose exec -T postgres sh /docker-entrypoint-initdb.d/10-init-databases.sh
+docker compose exec -T postgres psql -U postgres -d postgres -Atc "SELECT r.rolname, r.rolsuper, r.rolconnlimit, COALESCE(s.setconfig::text, '{}') FROM pg_roles r LEFT JOIN pg_db_role_setting s ON s.setrole = r.oid AND s.setdatabase = 0 WHERE r.rolname = 'evolution'"
+docker compose up -d --no-deps evolution-go
+```
+
+Expect a non-superuser role, limit `30`, and
+`idle_session_timeout=5min`. Then run the connection-budget check and the
+state/message checks in the dedicated rollout runbook. Never reconcile a
+retained production volume while Evolution is still opening connections.
+
 ## Run the VPS topology locally
 
 From the repository root in PowerShell:
@@ -141,9 +191,10 @@ Invoke-RestMethod http://127.0.0.1:8000/ready
 docker compose -f docker-compose.yml -f docker-compose.local.yml exec -T postgres psql -U postgres -d postgres -Atc "SELECT datname FROM pg_database WHERE datname IN ('bella','evogo_auth','evogo_users') ORDER BY datname"
 ```
 
-`/server/ok` only proves that the Evolution process is healthy. Evolution Go
-0.7.1 returns 503 from business endpoints until its online license has been
-activated, and health does not prove that a WhatsApp instance is paired.
+`/server/ok` only proves that the Evolution process is healthy. The patched
+runtime can return 503 from business endpoints until its online license has
+been activated, and health does not prove that a WhatsApp instance is paired
+or that PostgreSQL connections are within budget.
 
 Bella's Postgres integration tests delete their own test records. Create a
 disposable database; never point `BELLA_TEST_DATABASE_URL` at production:
@@ -171,12 +222,13 @@ For a clean stack:
 
 1. Open `/manager/login` on the local URL or the HTTPS domain routed by
    Coolify.
-2. Log in with `EVOLUTION_GLOBAL_API_KEY` and complete Evolution Go 0.7.1's
+2. Log in with `EVOLUTION_GLOBAL_API_KEY` and complete Evolution GO's
    license activation flow.
 3. Create the Bella instance. Assign it exactly the token stored in
    `EVOLUTION_API_KEY`, then pair the WhatsApp number.
 4. If desired, copy the returned UUID into `EVOLUTION_INSTANCE_ID` and
-   redeploy. The token, not this UUID header, selects the instance in 0.7.1.
+   redeploy. The token, not this UUID header, selects the instance in this
+   runtime.
 5. From a terminal in the running `bella` container, register the internal
    webhook and set the WhatsApp presentation:
 
@@ -189,10 +241,10 @@ For a clean stack:
 fixed internal URL `http://bella:8000/webhook`; `set_presentation` makes
 Evolution fetch the profile image from Bella over the same Compose network.
 
-Evolution Go 0.7.1 has no webhook signature or custom-header setting and logs
-the complete webhook URL on delivery. A secret URL segment would therefore
-leak into its logs. Instead, Bella constant-time validates the top-level
-`instanceToken` that 0.7.1 includes in every event against
+The patched Evolution runtime has no webhook signature or custom-header
+setting and logs the complete webhook URL on delivery. A secret URL segment
+would therefore leak into its logs. Instead, Bella constant-time validates the
+top-level `instanceToken` included in every event against
 `EVOLUTION_API_KEY`. The fixed webhook path contains no credential and is not
 published by this stack.
 
@@ -211,6 +263,11 @@ published by this stack.
 6. Send a real WhatsApp DM, confirm a reply, redeploy once, and repeat the DM
    to prove the volumes and service DNS survive a normal release.
 
+For the leak-mitigation rollout, those smoke checks are only part of the gate.
+Run the licensed reconnect acceptance first, promote the exact resulting image
+digest, and follow the maintenance and rollback sequence in
+[the dedicated runbook](evolution-reconnect-rollout.md).
+
 No network ID, container name, or manual `docker network connect` command is
 part of this design. Coolify may attach its own proxy network in addition to
 the project network; communication within the stack continues to use
@@ -226,8 +283,8 @@ not automatically adopt the current Evolution/Postgres resource's volume.
   token, and pair the number again.
 - **State-preserving cutover:** restore logical dumps into a freshly initialized
   new cluster using the procedure below. With `POSTGRES_AUTH_DB` configured,
-  Evolution Go 0.7.1 stores the paired WhatsApp session in Postgres rather than
-  `/app/dbdata`.
+  the patched Evolution runtime stores the paired WhatsApp session in Postgres
+  rather than `/app/dbdata`.
 
 Never copy an old Postgres data directory directly into the new named volume.
 The initialization script runs only for an empty cluster, and a raw directory
@@ -318,12 +375,16 @@ restarts a process that exits; Docker and Coolify do **not** restart a process
 merely because its health status becomes `unhealthy`. Enable Coolify alerts for
 unhealthy services and investigate/restart them after fixing the dependency.
 
-Evolution Go 0.7.1 has an upstream NATS-disable bug: even with an empty
-`NATS_URL` and `NATS_GLOBAL_ENABLED=false`, its producer constructor attempts
-one connection and logs `Failed to connect to NATS`. This stack does not use
-NATS; that startup line (and possible `NATS connection is nil` event warnings)
-is expected and does not make `/server/ok` fail. The license-required banner is
-also expected until the first activation. Other startup errors are not normal.
+Neither HTTP signal measures Evolution's database usage. Run the
+[connection-budget check](evolution-connection-budget.md) during deployment,
+after reconnect activity, and whenever Evolution is unstable.
+
+The upstream runtime can attempt one NATS connection even with an empty
+`NATS_URL` and `NATS_GLOBAL_ENABLED=false`, logging `Failed to connect to NATS`.
+This stack does not use NATS; that startup line (and possible
+`NATS connection is nil` event warnings) does not make `/server/ok` fail. The
+license-required banner is also expected until the first activation. Other
+startup errors are not normal.
 
 ## Backups and restore drills
 
