@@ -51,8 +51,10 @@ class FakeConnector:
     def __init__(self) -> None:
         self.evolution_count = 0
         self.connections: list[FakeConnection] = []
+        self.calls: list[str] = []
 
     def __call__(self, dsn: str, *, connect_timeout: int) -> FakeConnection:
+        self.calls.append(dsn)
         if dsn == "evolution":
             self.evolution_count += 1
             if self.evolution_count == 31:
@@ -76,6 +78,8 @@ def test_proof_opens_limit_rejects_next_and_cleans_up() -> None:
     assert result.rejected_sqlstate == "53300"
     assert result.bella_query_succeeded is True
     assert result.admin_query_succeeded is True
+    assert connector.calls[:31] == ["evolution"] * 31
+    assert connector.calls[31:] == ["bella", "admin"]
     assert all(connection.closed for connection in connector.connections)
 
 

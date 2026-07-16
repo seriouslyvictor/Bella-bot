@@ -37,3 +37,9 @@ operator-controlled and unchecked.
 assessment path, hashes its bytes, parses a passing reconnect decision with all
 required artifact hashes, and binds the assessment's image digest to the image
 being deployed. No production or official-release checkbox was changed.
+
+2026-07-16 final re-review — Added a distinct `official-reconnect` template and
+candidate provenance contract. Official retirement now requires its assessment
+to identify the official candidate kind, matching release tag and subject
+digest; Bella-patched provenance cannot masquerade as official evidence. No
+production or official-release checkbox was changed.

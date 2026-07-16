@@ -37,6 +37,8 @@ PATCH_COMMITS = [
 ]
 PATCHED_IDENTITY = "0.7.2-pr117-0328955"
 PATCHED_REFERENCE = f"bella/evolution-go:{PATCHED_IDENTITY}"
+PATCHED_CANDIDATE_KIND = "bella-patched"
+OFFICIAL_CANDIDATE_KIND = "official-release"
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -92,6 +94,47 @@ def _validate_provenance(manifest: Mapping[str, object], errors: list[str]) -> N
     )
 
 
+def _validate_reconnect_provenance(
+    manifest: Mapping[str, object], errors: list[str]
+) -> None:
+    provenance = _mapping(manifest.get("provenance"), "provenance", errors)
+    candidate_kind = provenance.get("candidate_kind")
+    if candidate_kind == PATCHED_CANDIDATE_KIND:
+        _validate_provenance(manifest, errors)
+        return
+    if candidate_kind != OFFICIAL_CANDIDATE_KIND:
+        errors.append(
+            "provenance.candidate_kind must be bella-patched or official-release"
+        )
+        return
+
+    tag = provenance.get("release_tag")
+    if not isinstance(tag, str) or not tag or tag.lower() == "latest":
+        errors.append("official candidate release_tag must be non-floating")
+    source_commit = provenance.get("source_commit")
+    if not isinstance(source_commit, str) or _COMMIT.fullmatch(source_commit) is None:
+        errors.append("official candidate source_commit must be a full commit")
+    _validate_pinned_reference(
+        provenance.get("image_reference"),
+        provenance.get("image_digest"),
+        "official_candidate_image",
+        errors,
+    )
+    reference = provenance.get("image_reference")
+    if isinstance(tag, str) and isinstance(reference, str) and f":{tag}@" not in reference:
+        errors.append("official candidate image reference must include release_tag")
+    identity = provenance.get("runtime_identity")
+    if not isinstance(identity, str) or not identity:
+        errors.append("official candidate runtime_identity must be non-empty")
+    if provenance.get("contains_pr117_or_equivalent_fix") is not True:
+        errors.append(
+            "official candidate contains_pr117_or_equivalent_fix must be explicitly true"
+        )
+    fix_identity = provenance.get("fix_identity")
+    if not isinstance(fix_identity, str) or not fix_identity.strip():
+        errors.append("official candidate fix_identity must be a non-empty identifier")
+
+
 def _validate_role(manifest: Mapping[str, object], errors: list[str]) -> None:
     role = _mapping(manifest.get("database_role"), "database_role", errors)
     _require_equal(role.get("rolsuper"), False, "database_role.rolsuper", errors)
@@ -116,6 +159,16 @@ def _integer(value: object, name: str, errors: list[str]) -> int | None:
     return value
 
 
+def _nonnegative_integer(
+    value: object, name: str, errors: list[str]
+) -> int | None:
+    parsed = _integer(value, name, errors)
+    if parsed is not None and parsed < 0:
+        errors.append(f"{name} cannot be negative")
+        return None
+    return parsed
+
+
 @dataclass(frozen=True)
 class _ConnectionSample:
     raw: Mapping[str, object]
@@ -136,12 +189,14 @@ def _parse_connection_samples(
     for index, raw_value in enumerate(values):
         item_name = f"{name}[{index}]"
         sample = _mapping(raw_value, item_name, errors)
-        total = _integer(sample.get("total"), f"{item_name}.total", errors)
-        auth_total = _integer(
+        total = _nonnegative_integer(
+            sample.get("total"), f"{item_name}.total", errors
+        )
+        auth_total = _nonnegative_integer(
             sample.get("evogo_auth_total"), f"{item_name}.evogo_auth_total", errors
         )
         auth_idle = (
-            _integer(
+            _nonnegative_integer(
                 sample.get("evogo_auth_idle"), f"{item_name}.evogo_auth_idle", errors
             )
             if require_idle
@@ -155,8 +210,6 @@ def _parse_connection_samples(
             errors.append(
                 f"{item_name}.evogo_auth_total must not exceed {AUTH_POOL_CEILING}"
             )
-        if auth_idle is not None and auth_idle < 0:
-            errors.append(f"{item_name}.evogo_auth_idle cannot be negative")
         parsed.append(_ConnectionSample(sample, total, auth_total, auth_idle))
     return parsed
 
@@ -286,7 +339,7 @@ def _assess_reconnect(
         manifest.get("operator_attestation"), "operator_attestation", errors
     )
     _require_true(attestation, ["real_evidence"], errors)
-    _validate_provenance(manifest, errors)
+    _validate_reconnect_provenance(manifest, errors)
     _validate_role(manifest, errors)
 
     exercise = _mapping(manifest.get("exercise"), "exercise", errors)
@@ -401,6 +454,8 @@ def _validate_ticket04_assessment(
     path_field: str,
     digest_field: str,
     expected_image_digest: object,
+    expected_candidate_kind: str,
+    expected_release_tag: object = None,
     base_dir: Path,
     errors: list[str],
 ) -> None:
@@ -460,6 +515,16 @@ def _validate_ticket04_assessment(
         errors.append(f"{label} must be a passing reconnect-acceptance assessment")
     if document.get("subject_image_digest") != expected_image_digest:
         errors.append(f"{label} must assess the image digest being deployed")
+    if document.get("subject_candidate_kind") != expected_candidate_kind:
+        if expected_candidate_kind == OFFICIAL_CANDIDATE_KIND:
+            errors.append(f"{label} must contain official-release candidate provenance")
+        else:
+            errors.append(f"{label} must contain Bella-patched candidate provenance")
+    if (
+        expected_candidate_kind == OFFICIAL_CANDIDATE_KIND
+        and document.get("subject_release_tag") != expected_release_tag
+    ):
+        errors.append(f"{label} must assess the official release tag being retired")
 
 
 def _validate_official_exit(
@@ -501,6 +566,8 @@ def _validate_official_exit(
         path_field="ticket04_assessment_path",
         digest_field="ticket04_assessment_sha256",
         expected_image_digest=official.get("image_digest"),
+        expected_candidate_kind=OFFICIAL_CANDIDATE_KIND,
+        expected_release_tag=official.get("release_tag"),
         base_dir=base_dir,
         errors=errors,
     )
@@ -526,6 +593,7 @@ def _assess_rollout(
         path_field="assessment_path",
         digest_field="assessment_sha256",
         expected_image_digest=provenance_for_acceptance.get("image_digest"),
+        expected_candidate_kind=PATCHED_CANDIDATE_KIND,
         base_dir=base_dir,
         errors=errors,
     )
@@ -677,14 +745,17 @@ def assess_manifest(manifest: Mapping[str, object], *, base_dir: Path) -> dict[s
         evidence_scope = "unknown"
         artifacts = {}
         errors.append("kind must be reconnect-acceptance or production-rollout")
+    raw_provenance = manifest.get("provenance")
+    subject_provenance = raw_provenance if isinstance(raw_provenance, Mapping) else {}
     return {
         "schema_version": 1,
         "kind": kind,
         "decision": "fail" if errors else "pass",
         "evidence_scope": evidence_scope,
-        "subject_image_digest": _mapping(
-            manifest.get("provenance"), "assessment provenance", []
-        ).get("image_digest"),
+        "subject_image_digest": subject_provenance.get("image_digest"),
+        "subject_candidate_kind": subject_provenance.get("candidate_kind"),
+        "subject_release_tag": subject_provenance.get("release_tag"),
+        "subject_fix_identity": subject_provenance.get("fix_identity"),
         "manifest_sha256": _canonical_sha256(manifest),
         "artifact_sha256": artifacts,
         "errors": errors,
@@ -698,7 +769,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("manifest", nargs="?", type=Path, help="JSON evidence manifest")
     parser.add_argument(
         "--template",
-        choices=("reconnect", "rollout"),
+        choices=("reconnect", "official-reconnect", "rollout"),
         help="print an explicitly incomplete evidence manifest template",
     )
     parser.add_argument(
@@ -724,7 +795,20 @@ def _template(name: str) -> dict[str, object]:
         "connection_limit": None,
         "idle_session_timeout": "",
     }
-    if name == "reconnect":
+    if name in {"reconnect", "official-reconnect"}:
+        if name == "reconnect":
+            provenance["candidate_kind"] = PATCHED_CANDIDATE_KIND
+        else:
+            provenance = {
+                "candidate_kind": OFFICIAL_CANDIDATE_KIND,
+                "release_tag": "",
+                "source_commit": "",
+                "image_reference": "",
+                "image_digest": "",
+                "runtime_identity": "",
+                "contains_pr117_or_equivalent_fix": False,
+                "fix_identity": "",
+            }
         return {
             "schema_version": 1,
             "kind": "reconnect-acceptance",
@@ -862,7 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.manifest is None:
         parser.error("a manifest path or --template is required")
     manifest_path: Path = args.manifest
-    raw: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw: Any = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, Mapping):
         raise SystemExit("manifest root must be a JSON object")
     assessment = assess_manifest(raw, base_dir=manifest_path.parent)

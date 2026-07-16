@@ -35,3 +35,8 @@ operator-run disposable PostgreSQL exercise.
 30-session hold, SQLSTATE `53300` requirement for the 31st connection,
 Bella/admin queries, and unconditional cleanup. The environmental checkbox
 remains open until an operator runs it on a disposable real PostgreSQL stack.
+
+2026-07-16 final re-review — The isolation proof now creates Bella and
+administrator connections only after 30 Evolution sessions are held and the
+31st is rejected, proving new connections work at saturation. The real-stack
+checkbox remains open.

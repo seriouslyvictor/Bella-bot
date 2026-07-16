@@ -36,3 +36,8 @@ post-plateau increase, including `9, 7, 8`. The production gate now hashes and
 parses an actual ticket-04 assessment file and binds its assessed image digest
 to the rollout. These are synthetic decision-engine checks only; all licensed
 environmental acceptance boxes remain open.
+
+2026-07-16 final re-review — Shared connection-sample parsing now rejects
+negative total, authentication-total, and idle counts. The public CLI accepts
+PowerShell 5.1 UTF-8 BOM manifests. These unit-backed changes do not replace
+the licensed reconnect exercise.

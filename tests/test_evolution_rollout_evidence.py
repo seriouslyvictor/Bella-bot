@@ -38,10 +38,26 @@ def _ticket04_assessment(
     *,
     image_digest: str = PATCHED_DIGEST,
     filename: str = "ticket-04-assessment.json",
+    candidate_kind: str = "bella-patched",
 ) -> dict[str, str]:
     path = tmp_path / filename
     manifest = reconnect_manifest(tmp_path)
-    manifest["provenance"]["image_digest"] = image_digest
+    if candidate_kind == "official-release":
+        manifest["provenance"] = {
+            "candidate_kind": "official-release",
+            "release_tag": "0.7.3",
+            "source_commit": "1" * 40,
+            "image_reference": (
+                f"evoapicloud/evolution-go:0.7.3@{image_digest}"
+            ),
+            "image_digest": image_digest,
+            "runtime_identity": "0.7.3",
+            "contains_pr117_or_equivalent_fix": True,
+            "fix_identity": "upstream-pr-117",
+        }
+    else:
+        manifest["provenance"]["candidate_kind"] = candidate_kind
+        manifest["provenance"]["image_digest"] = image_digest
     assessment = assess_manifest(manifest, base_dir=tmp_path)
     path.write_text(json.dumps(assessment, sort_keys=True) + "\n", encoding="utf-8")
     return {
@@ -88,6 +104,7 @@ def reconnect_manifest(tmp_path: Path) -> dict[str, Any]:
             "production": False,
         },
         "provenance": {
+            "candidate_kind": "bella-patched",
             "source_commit": SOURCE_COMMIT,
             "patch_commits": PATCH_COMMITS,
             "image_reference": "bella/evolution-go:0.7.2-pr117-0328955",
@@ -222,6 +239,19 @@ def test_reconnect_manifest_rejects_connection_ceiling_breaches(
 
     assert assessment["decision"] == "fail"
     assert error in _errors_text(assessment)
+
+
+@pytest.mark.parametrize("field", ["total", "evogo_auth_total", "evogo_auth_idle"])
+def test_reconnect_manifest_rejects_negative_connection_counts(
+    tmp_path: Path, field: str
+) -> None:
+    manifest = reconnect_manifest(tmp_path)
+    manifest["exercise"]["samples"][15][field] = -1
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert f"{field} cannot be negative" in _errors_text(assessment)
 
 
 def test_reconnect_manifest_rejects_rising_plateau_and_excess_quiet_idle(
@@ -465,6 +495,19 @@ def test_rollout_rejects_connection_observation_ceiling_breaches(
     assert error in _errors_text(assessment)
 
 
+@pytest.mark.parametrize("field", ["total", "evogo_auth_total"])
+def test_rollout_rejects_negative_connection_counts(
+    tmp_path: Path, field: str
+) -> None:
+    manifest = rollout_manifest(tmp_path)
+    manifest["post_change"]["connection_samples"][1][field] = -1
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert f"{field} cannot be negative" in _errors_text(assessment)
+
+
 def test_rollout_computes_and_rejects_monotonic_growth(tmp_path: Path) -> None:
     manifest = rollout_manifest(tmp_path)
     manifest["post_change"]["connection_samples"] = [
@@ -504,6 +547,7 @@ def test_custom_build_can_retire_after_official_release_passes_same_gate(
         tmp_path,
         image_digest=digest,
         filename="official-ticket-04-assessment.json",
+        candidate_kind="official-release",
     )
     manifest["official_release_exit"] = {
         "custom_build_retired": True,
@@ -524,6 +568,56 @@ def test_custom_build_can_retire_after_official_release_passes_same_gate(
     assert assessment["decision"] == "pass"
 
 
+def test_official_exit_rejects_patched_provenance_masquerading_as_candidate(
+    tmp_path: Path,
+) -> None:
+    manifest = rollout_manifest(tmp_path)
+    digest = f"sha256:{'e' * 64}"
+    patched_assessment = _ticket04_assessment(
+        tmp_path,
+        image_digest=digest,
+        filename="masquerading-ticket-04-assessment.json",
+    )
+    manifest["official_release_exit"] = {
+        "custom_build_retired": True,
+        "release_tag": "0.7.3",
+        "image_reference": f"evoapicloud/evolution-go:0.7.3@{digest}",
+        "image_digest": digest,
+        "release_source_verified": True,
+        "contains_pr117_or_equivalent_fix": True,
+        "ticket04_repassed": True,
+        "ticket04_assessment_path": patched_assessment["assessment_path"],
+        "ticket04_assessment_sha256": patched_assessment["assessment_sha256"],
+        "contract_suites_passed": True,
+    }
+    manifest["artifacts"].append(_artifact(tmp_path, "official-release-verification"))
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "official-release candidate provenance" in _errors_text(assessment)
+
+
+def test_official_candidate_reconnect_requires_fix_identity(tmp_path: Path) -> None:
+    manifest = reconnect_manifest(tmp_path)
+    digest = f"sha256:{'e' * 64}"
+    manifest["provenance"] = {
+        "candidate_kind": "official-release",
+        "release_tag": "0.7.3",
+        "source_commit": "1" * 40,
+        "image_reference": f"evoapicloud/evolution-go:0.7.3@{digest}",
+        "image_digest": digest,
+        "runtime_identity": "0.7.3",
+        "contains_pr117_or_equivalent_fix": True,
+        "fix_identity": "",
+    }
+
+    assessment = assess_manifest(manifest, base_dir=tmp_path)
+
+    assert assessment["decision"] == "fail"
+    assert "fix_identity" in _errors_text(assessment)
+
+
 def test_cli_writes_new_assessment_and_refuses_to_overwrite_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -541,9 +635,24 @@ def test_cli_writes_new_assessment_and_refuses_to_overwrite_it(
         main([str(manifest_path), "--output", str(output_path)])
 
 
+def test_cli_accepts_utf8_bom_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = tmp_path / "powershell-51-manifest.json"
+    encoded = json.dumps(reconnect_manifest(tmp_path)).encode("utf-8")
+    manifest_path.write_bytes(b"\xef\xbb\xbf" + encoded)
+
+    assert main([str(manifest_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "pass"
+
+
 @pytest.mark.parametrize(
     ("template", "kind"),
-    [("reconnect", "reconnect-acceptance"), ("rollout", "production-rollout")],
+    [
+        ("reconnect", "reconnect-acceptance"),
+        ("official-reconnect", "reconnect-acceptance"),
+        ("rollout", "production-rollout"),
+    ],
 )
 def test_cli_emits_incomplete_templates_without_claiming_real_evidence(
     template: str, kind: str, capsys: pytest.CaptureFixture[str]
@@ -553,3 +662,9 @@ def test_cli_emits_incomplete_templates_without_claiming_real_evidence(
     document = json.loads(capsys.readouterr().out)
     assert document["kind"] == kind
     assert document["operator_attestation"]["real_evidence"] is False
+    if template == "reconnect":
+        assert document["provenance"]["candidate_kind"] == "bella-patched"
+    if template == "official-reconnect":
+        assert document["provenance"]["candidate_kind"] == "official-release"
+        assert document["provenance"]["contains_pr117_or_equivalent_fix"] is False
+        assert document["provenance"]["fix_identity"] == ""

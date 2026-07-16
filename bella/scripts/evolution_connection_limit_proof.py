@@ -63,13 +63,10 @@ def prove_capacity(
     admin_ok = False
     cleaned_up = True
     try:
-        admin = connector(admin_dsn, connect_timeout=5)
-        connections.append(admin)
-        bella = connector(bella_dsn, connect_timeout=5)
-        connections.append(bella)
-
+        first_evolution = connector(evolution_dsn, connect_timeout=5)
+        connections.append(first_evolution)
         role_limit = _scalar(
-            admin,
+            first_evolution,
             "SELECT rolconnlimit FROM pg_roles WHERE rolname = %s",
             (EVOLUTION_ROLE,),
         )
@@ -78,8 +75,9 @@ def prove_capacity(
                 f"Evolution role limit is {role_limit}, expected {ROLE_CONNECTION_LIMIT}"
             )
         existing = _scalar(
-            admin,
-            "SELECT count(*) FROM pg_stat_activity WHERE usename = %s",
+            first_evolution,
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE usename = %s AND pid <> pg_backend_pid()",
             (EVOLUTION_ROLE,),
         )
         if existing != 0:
@@ -87,7 +85,9 @@ def prove_capacity(
                 f"Evolution must be stopped with zero existing sessions; found {existing}"
             )
 
-        for _ in range(ROLE_CONNECTION_LIMIT):
+        if _scalar(first_evolution, "SELECT 1") != 1:
+            raise ProofFailure("an Evolution proof session could not query PostgreSQL")
+        for _ in range(ROLE_CONNECTION_LIMIT - 1):
             evolution = connector(evolution_dsn, connect_timeout=5)
             connections.append(evolution)
             if _scalar(evolution, "SELECT 1") != 1:
@@ -105,6 +105,12 @@ def prove_capacity(
             connections.append(unexpected)
             raise ProofFailure("the 31st Evolution connection was unexpectedly accepted")
 
+        # These must be new connections, established only after Evolution is
+        # demonstrably saturated, otherwise they do not prove reserved access.
+        bella = connector(bella_dsn, connect_timeout=5)
+        connections.append(bella)
+        admin = connector(admin_dsn, connect_timeout=5)
+        connections.append(admin)
         bella_ok = _scalar(bella, "SELECT 1") == 1
         admin_ok = _scalar(admin, "SELECT 1") == 1
         if not bella_ok or not admin_ok:

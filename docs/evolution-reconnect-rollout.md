@@ -26,6 +26,9 @@ python -m bella.scripts.evolution_rollout_evidence --template reconnect |
 Use `--template rollout` for the production manifest. The templates set
 `real_evidence` to `false`, leave digests empty, and mark checks incomplete.
 Change a field only after the corresponding real check has succeeded.
+PowerShell 5.1 may write a UTF-8 BOM with `Set-Content -Encoding utf8`; the CLI
+accepts that encoding and hashes referenced assessment files by their exact
+bytes.
 
 Evidence artifact paths are relative to the directory containing the manifest.
 Every artifact must remain inside that directory and have its lowercase SHA-256
@@ -128,6 +131,10 @@ echo $?
 Do not run this saturation proof in production. Exit `0` is the evidence
 signal; exit `3` means the proof failed closed and PostgreSQL logs/prerequisites
 must be inspected. Retain the output as part of `connection-samples` evidence.
+The Bella and administrator connections are created only after all 30
+Evolution sessions are held and the 31st Evolution connection has been
+rejected, so this proves new role connections—not merely pre-opened sessions—
+remain available at saturation.
 
 Review the retained Evolution logs over the exact exercise window. Promotion
 is blocked by `too many clients`, unexpected connection refusal, a roughly
@@ -254,3 +261,15 @@ Only then set `custom_build_retired` true. Pin the official tag **and** manifest
 digest in deployment configuration. The same reconnect, recovery, timeout,
 state, and real-message gates apply; upstream release status alone is not an
 exit criterion.
+
+Generate the official candidate's reconnect manifest with
+`--template official-reconnect`, not the Bella-patched `reconnect` template.
+The official schema requires a non-floating release tag, full source commit,
+digest-qualified image reference, runtime identity, and an explicit reviewed
+PR #117-or-equivalent fix claim plus a non-empty fix identifier (for example,
+the reviewed upstream PR or equivalent commit). Its passing assessment records
+the official
+candidate kind and release tag. Retirement rejects a Bella-patched assessment
+masquerading behind the official image digest, while normal patched production
+rollout continues to require the exact Bella source, patch order, reference,
+runtime identity, and candidate kind.
