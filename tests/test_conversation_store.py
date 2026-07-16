@@ -69,3 +69,35 @@ def test_production_store_refuses_to_connect_to_an_evolution_database() -> None:
             "postgresql://postgres:secret@postgres:5432/evolution",
             required_database_name="bella",
         )
+
+
+def test_pause_can_be_set_read_and_cleared() -> None:
+    async def exercise() -> None:
+        store = InMemoryConversationStore()
+        assert await store.paused_until("5511999999999") is None
+
+        until = datetime(2026, 7, 16, 13, 0, tzinfo=UTC)
+        await store.set_pause("5511999999999", until)
+        assert await store.paused_until("5511999999999") == until
+
+        extended = until + timedelta(minutes=30)
+        await store.set_pause("5511999999999", extended)
+        assert await store.paused_until("5511999999999") == extended
+
+        await store.clear_pause("5511999999999")
+        assert await store.paused_until("5511999999999") is None
+
+    asyncio.run(exercise())
+
+
+def test_pause_can_be_set_for_a_conversation_with_no_prior_messages() -> None:
+    async def exercise() -> None:
+        store = InMemoryConversationStore()
+        until = datetime(2026, 7, 16, 13, 0, tzinfo=UTC)
+
+        await store.set_pause("5511999999999", until)
+
+        assert await store.paused_until("5511999999999") == until
+        assert await store.recent_messages("5511999999999") == []
+
+    asyncio.run(exercise())

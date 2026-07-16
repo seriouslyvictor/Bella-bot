@@ -51,6 +51,8 @@ class Settings:
     enrollment_card_path: Path = DEFAULT_ENROLLMENT_CARD_PATH
     apostila_path: Path = DEFAULT_APOSTILA_PATH
     rate_limit_policy: RateLimitPolicy = RateLimitPolicy()
+    # Sliding Takeover Pause window (ADR 0003), reset by every human message.
+    takeover_pause_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -83,5 +85,8 @@ class Settings:
                 window_seconds=_int_from_env(
                     "RATE_LIMIT_WINDOW_SECONDS", _RATE_LIMIT_DEFAULTS.window_seconds
                 ),
+            ),
+            takeover_pause_seconds=_int_from_env(
+                "TAKEOVER_PAUSE_SECONDS", cls.takeover_pause_seconds
             ),
         )

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import psycopg
 import pytest
 
 from bella.conversation_store import ConversationMessage, PostgresConversationStore
@@ -57,6 +58,84 @@ def test_postgres_history_and_dedupe_survive_store_restart() -> None:
             assert await restarted_store.claim_delivery(message_id) is False
         finally:
             await restarted_store.close()
+
+    run_async(exercise())
+
+
+def test_postgres_pause_can_be_set_read_cleared_and_survives_restart() -> None:
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        phone_number = f"test-{uuid4()}"
+        until = datetime(2026, 7, 16, 13, 0, tzinfo=UTC)
+
+        first_store = PostgresConversationStore(DATABASE_URL)
+        await first_store.start()
+        try:
+            assert await first_store.paused_until(phone_number) is None
+            await first_store.set_pause(phone_number, until)
+        finally:
+            await first_store.close()
+
+        restarted_store = PostgresConversationStore(DATABASE_URL)
+        await restarted_store.start()
+        try:
+            assert await restarted_store.paused_until(phone_number) == until
+            await restarted_store.clear_pause(phone_number)
+            assert await restarted_store.paused_until(phone_number) is None
+        finally:
+            await restarted_store.close()
+
+    run_async(exercise())
+
+
+def test_postgres_pause_can_be_set_for_a_conversation_with_no_prior_messages() -> None:
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        phone_number = f"test-{uuid4()}"
+        until = datetime(2026, 7, 16, 13, 0, tzinfo=UTC)
+
+        store = PostgresConversationStore(DATABASE_URL)
+        await store.start()
+        try:
+            await store.set_pause(phone_number, until)
+            assert await store.paused_until(phone_number) == until
+            assert await store.recent_messages(phone_number) == []
+        finally:
+            await store.close()
+
+    run_async(exercise())
+
+
+def test_postgres_schema_migration_adds_paused_until_to_an_existing_table() -> None:
+    """Simulates a database created by the previous schema version (before
+    paused_until existed) — the current schema statements must still apply
+    cleanly on top of it (ADR 0003)."""
+
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        # Get a table into the pre-migration shape without going through the
+        # store, so this only pins the migration's behavior, not its SQL.
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as connection:
+            await connection.execute(
+                "CREATE TABLE IF NOT EXISTS conversations ("
+                "  phone_number TEXT PRIMARY KEY,"
+                "  last_message_at TIMESTAMPTZ NOT NULL"
+                ")"
+            )
+            await connection.execute(
+                "ALTER TABLE conversations DROP COLUMN IF EXISTS paused_until"
+            )
+            await connection.commit()
+
+        migrated_store = PostgresConversationStore(DATABASE_URL)
+        await migrated_store.start()  # must not raise applying the new column
+        try:
+            phone_number = f"test-{uuid4()}"
+            until = datetime(2026, 7, 16, 13, 0, tzinfo=UTC)
+            await migrated_store.set_pause(phone_number, until)
+            assert await migrated_store.paused_until(phone_number) == until
+        finally:
+            await migrated_store.close()
 
     run_async(exercise())
 

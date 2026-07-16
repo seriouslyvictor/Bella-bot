@@ -1,5 +1,6 @@
 import functools
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -144,6 +145,8 @@ def make_test_client(
     rate_limit_max_messages: int = 10,
     rate_limit_window_seconds: int = 60,
     rate_limit_clock: Callable[[], float] | None = None,
+    takeover_pause_seconds: int = 3600,
+    takeover_clock: Callable[[], datetime] | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     pipeline = Pipeline(
@@ -158,6 +161,8 @@ def make_test_client(
         admin_contact,
         RateLimitPolicy(rate_limit_max_messages, rate_limit_window_seconds),
         rate_limit_clock or monotonic,
+        takeover_pause_seconds,
+        takeover_clock or (lambda: datetime.now(UTC)),
     )
     app = create_app(make_settings(), pipeline)
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)

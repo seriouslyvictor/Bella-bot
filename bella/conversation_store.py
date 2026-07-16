@@ -40,6 +40,15 @@ class ConversationStore(Protocol):
 
     async def delete_conversations_idle_before(self, cutoff: datetime) -> int: ...
 
+    # Takeover Pause state (ADR 0003). A conversation may have no prior
+    # messages when a pause is first set, so set_pause must create the
+    # conversation record rather than assume it exists.
+    async def paused_until(self, phone_number: str) -> datetime | None: ...
+
+    async def set_pause(self, phone_number: str, until: datetime) -> None: ...
+
+    async def clear_pause(self, phone_number: str) -> None: ...
+
 
 class InMemoryConversationStore:
     """Process-local store implementing the production persistence contract."""
@@ -47,6 +56,7 @@ class InMemoryConversationStore:
     def __init__(self) -> None:
         self._messages: dict[str, list[ConversationMessage]] = defaultdict(list)
         self._delivery_ids: set[str] = set()
+        self._paused_until: dict[str, datetime] = {}
 
     async def start(self) -> None:
         pass
@@ -81,15 +91,33 @@ class InMemoryConversationStore:
         ]
         for phone_number in idle_numbers:
             del self._messages[phone_number]
+            self._paused_until.pop(phone_number, None)
         return len(idle_numbers)
+
+    async def paused_until(self, phone_number: str) -> datetime | None:
+        return self._paused_until.get(phone_number)
+
+    async def set_pause(self, phone_number: str, until: datetime) -> None:
+        self._paused_until[phone_number] = until
+
+    async def clear_pause(self, phone_number: str) -> None:
+        self._paused_until.pop(phone_number, None)
 
 
 _SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS conversations (
         phone_number TEXT PRIMARY KEY,
-        last_message_at TIMESTAMPTZ NOT NULL
+        last_message_at TIMESTAMPTZ NOT NULL,
+        paused_until TIMESTAMPTZ
     )
+    """,
+    # ADD COLUMN IF NOT EXISTS makes this safe to re-run against a database
+    # created by the previous schema version, which had no paused_until
+    # column; the CREATE TABLE above already covers fresh databases.
+    """
+    ALTER TABLE conversations
+        ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ
     """,
     """
     CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -221,3 +249,35 @@ class PostgresConversationStore:
             )
             removed = await cursor.fetchall()
         return len(removed)
+
+    async def paused_until(self, phone_number: str) -> datetime | None:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT paused_until FROM conversations WHERE phone_number = %s",
+                (phone_number,),
+            )
+            row = await cursor.fetchone()
+        return row[0] if row is not None else None
+
+    async def set_pause(self, phone_number: str, until: datetime) -> None:
+        async with self._pool.connection() as connection:
+            # The conversation row may not exist yet (a takeover can be the
+            # first activity in a chat), and last_message_at is NOT NULL, so
+            # this upsert supplies `until` as that placeholder on insert; an
+            # existing row's last_message_at is left untouched.
+            await connection.execute(
+                """
+                INSERT INTO conversations (phone_number, last_message_at, paused_until)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (phone_number) DO UPDATE
+                SET paused_until = EXCLUDED.paused_until
+                """,
+                (phone_number, until, until),
+            )
+
+    async def clear_pause(self, phone_number: str) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                "UPDATE conversations SET paused_until = NULL WHERE phone_number = %s",
+                (phone_number,),
+            )

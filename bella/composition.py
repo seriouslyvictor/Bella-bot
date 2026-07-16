@@ -45,4 +45,5 @@ def build_pipeline(settings: Settings) -> Pipeline:
         content.human_contact_reply,
         settings.admin_contact,
         settings.rate_limit_policy,
+        takeover_pause_seconds=settings.takeover_pause_seconds,
     )

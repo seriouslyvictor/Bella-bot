@@ -4,6 +4,8 @@ Everything is driven by POSTing simulated Evolution GO webhook payloads;
 assertions observe only the fake sender and HTTP responses.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 from pathlib import Path
 
@@ -581,7 +583,12 @@ def test_legacy_secret_bearing_webhook_path_does_not_exist(
     assert sender.sent == []
 
 
-def test_own_messages_are_ignored(client: TestClient, sender: FakeSender) -> None:
+def test_foreign_from_me_message_starts_a_silent_takeover_pause(
+    client: TestClient, sender: FakeSender
+) -> None:
+    # A from-me message nobody in the ledger sent is the owner typing in
+    # (ADR 0003) — it pauses the conversation, not "ignored": no reply is
+    # sent for the takeover message itself, and no announcement is made.
     response = client.post(WEBHOOK, json=make_webhook_payload(from_me=True))
 
     assert response.status_code == 200
@@ -790,3 +797,257 @@ def test_profile_picture_asset_is_served(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
+
+
+# --- Implicit Takeover Pause (ADR 0003) ------------------------------------
+
+
+def test_foreign_from_me_media_message_also_pauses(sender: FakeSender) -> None:
+    client = make_test_client(sender)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None, message_id="TAKEOVER-MEDIA", from_me=True, message_type="image"
+        ),
+    )
+    response = client.post(
+        WEBHOOK, json=make_webhook_payload("oi", message_id="AFTER-MEDIA-TAKEOVER")
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == []
+
+
+def test_group_from_me_message_stays_ignored_and_does_not_pause(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(sender)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "oi grupo",
+            from_me=True,
+            is_group=True,
+            chat="1203630@g.us",
+            message_id="GROUP-FROM-ME",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == []
+
+
+def test_own_echo_matched_by_id_does_not_pause(sender: FakeSender) -> None:
+    client = make_test_client(sender)
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="ECHO-ID-USER-1"))
+    assert len(sender.sent) == 1
+    sent_message_id = "FAKE-MSG-1"  # FakeSender issues deterministic ids in order
+
+    echo = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "irrelevant text", message_id=sent_message_id, from_me=True
+        ),
+    )
+    assert echo.status_code == 200
+
+    # If the echo had paused the conversation, this next message would get
+    # no reply.
+    client.post(
+        WEBHOOK, json=make_webhook_payload("oi de novo", message_id="ECHO-ID-USER-2")
+    )
+    assert len(sender.sent) == 2
+
+
+def test_own_echo_matched_by_recipient_and_text_does_not_pause(
+    sender: FakeSender,
+) -> None:
+    """Exercises the (recipient, text) fallback that closes the race where a
+    webhook echo of Bella's own reply arrives before the send call returns
+    its provider id (ADR 0003, consequence 1). A bogus id stands in for "the
+    send hasn't returned its real id yet" — only the (recipient, text) match
+    can classify this echo as Bella's own."""
+    client = make_test_client(sender)
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="RACE-USER-1"))
+    sent_text = sender.sent[0][1]
+
+    echo = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            sent_text, message_id="ECHO-BEFORE-ID-KNOWN", from_me=True
+        ),
+    )
+    assert echo.status_code == 200
+
+    client.post(
+        WEBHOOK, json=make_webhook_payload("oi de novo", message_id="RACE-USER-2")
+    )
+    assert len(sender.sent) == 2
+
+
+def test_own_apostila_document_echo_does_not_pause(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    apostila = tmp_path / "apostila.pdf"
+    apostila.write_bytes(b"%PDF-1.7 test")
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=apostila,
+    )
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("apostila?", message_id="APOSTILA-ECHO-USER-1"),
+    )
+    assert len(sender.sent_documents) == 1
+    sent_document_id = "FAKE-MSG-1"  # FakeSender issues deterministic ids in order
+
+    # Evolution echoes document sends as from-me, non-text messages.
+    echo = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None,
+            message_id=sent_document_id,
+            from_me=True,
+            message_type="document",
+        ),
+    )
+    assert echo.status_code == 200
+
+    # If the echo had (wrongly) paused the conversation, this next apostila
+    # request would get no document at all.
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "apostila de novo", message_id="APOSTILA-ECHO-USER-2"
+        ),
+    )
+    assert len(sender.sent_documents) == 2
+
+
+def test_pause_silences_replies_stores_text_and_resumes_forward_only(
+    sender: FakeSender,
+) -> None:
+    now = [datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        answerer=answerer,
+        takeover_clock=lambda: now[0],
+        takeover_pause_seconds=3600,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "eu assumo daqui", message_id="PAUSE-TAKEOVER-START", from_me=True
+        ),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("ainda ai?", message_id="PAUSE-1"))
+    assert sender.sent == []
+    assert answerer.seen == []
+
+    # A further human message resets the sliding window (spec story 5).
+    now[0] += timedelta(minutes=30)
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "so um minuto", message_id="PAUSE-TAKEOVER-EXTEND", from_me=True
+        ),
+    )
+    now[0] += timedelta(minutes=40)  # 40 min after the reset, still inside 1h
+    client.post(WEBHOOK, json=make_webhook_payload("oi de novo", message_id="PAUSE-2"))
+    assert sender.sent == []
+    assert answerer.seen == []
+
+    now[0] += timedelta(hours=1, minutes=1)  # past the reset window
+    response = client.post(
+        WEBHOOK, json=make_webhook_payload("oi bella", message_id="AFTER-EXPIRY")
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    assert sender.sent[0][0] == "5511999999999"
+    # Pause-era messages were stored (no assistant turns among them, since
+    # nothing was ever sent) but never get a late answer after resume —
+    # forward-only (spec story 16).
+    assert [(m.role, m.text) for m in answerer.histories[0]] == [
+        ("user", "ainda ai?"),
+        ("user", "oi de novo"),
+    ]
+    assert answerer.seen == [("oi bella", RouteCategory.COURSE_QUESTION)]
+
+
+def test_default_pause_window_is_one_hour(sender: FakeSender) -> None:
+    now = [datetime(2026, 7, 16, 9, 0, 0, tzinfo=UTC)]
+    client = make_test_client(sender, takeover_clock=lambda: now[0])
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo", message_id="DEFAULT-WINDOW-START", from_me=True
+        ),
+    )
+
+    now[0] += timedelta(minutes=59)
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("ainda pausado?", message_id="DEFAULT-WINDOW-INSIDE"),
+    )
+    assert sender.sent == []
+
+    now[0] += timedelta(minutes=2)  # 61 minutes since the takeover message
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="DEFAULT-WINDOW-AFTER"),
+    )
+    assert len(sender.sent) == 1
+
+
+def test_duplicate_delivery_during_pause_stores_the_message_only_once(
+    sender: FakeSender,
+) -> None:
+    now = [datetime(2026, 7, 16, 9, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, answerer=answerer, takeover_clock=lambda: now[0])
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo", message_id="DUP-PAUSE-TAKEOVER", from_me=True
+        ),
+    )
+    payload = make_webhook_payload("oi de novo", message_id="DUP-PAUSE-MSG")
+    first = client.post(WEBHOOK, json=payload)
+    second = client.post(WEBHOOK, json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert sender.sent == []
+
+    now[0] += timedelta(hours=2)
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="DUP-PAUSE-AFTER"))
+
+    assert [m.text for m in answerer.histories[0]] == ["oi de novo"]
+
+
+def test_pause_survives_service_restart(sender: FakeSender) -> None:
+    store = InMemoryConversationStore()
+    first_service = make_test_client(sender, conversation_store=store)
+    first_service.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo aqui", message_id="RESTART-TAKEOVER", from_me=True
+        ),
+    )
+
+    restarted_service = make_test_client(sender, conversation_store=store)
+    response = restarted_service.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="RESTART-DURING-PAUSE"),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == []
