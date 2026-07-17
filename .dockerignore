@@ -9,6 +9,5 @@ tests/
 .env
 *.docx
 docs/
-curso_details.jpg
 Dockerfile
 .dockerignore
