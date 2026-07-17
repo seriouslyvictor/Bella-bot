@@ -293,8 +293,10 @@ class Pipeline:
     async def _handle_takeover_signal(self, message: InboundMessage) -> None:
         """A from-me message is either Bella's own echo or a human typing in.
 
-        The Owner role and its storage land in ticket 03; here a genuine
-        Takeover message only sets/extends the pause.
+        A genuine Takeover message sets/extends the pause; text is also
+        recorded under the Owner role so Bella has context after resume
+        without ever inheriting a human commitment as her own (ticket 03).
+        Media messages (text is None) only re-arm the pause.
         """
         if self._echo_ledger.is_own_echo(
             message.message_id, message.number, message.text
@@ -302,6 +304,11 @@ class Pipeline:
             return
         until = self._clock() + self._takeover_pause_window
         await self._conversation_store.set_pause(message.number, until)
+        if message.text is not None:
+            await self._conversation_store.append_message(
+                message.number,
+                ConversationMessage("owner", message.text, datetime.now(UTC)),
+            )
         logger.info("takeover pause set for %s until %s", message.number, until)
 
     async def _pause_active(self, phone_number: str) -> bool:

@@ -90,6 +90,24 @@ def test_pause_can_be_set_read_and_cleared() -> None:
     asyncio.run(exercise())
 
 
+def test_owner_role_messages_are_stored_and_returned_distinctly() -> None:
+    async def exercise() -> None:
+        store = InMemoryConversationStore()
+        timestamp = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+        await store.append_message(
+            "5511999999999",
+            ConversationMessage("owner", "eu assumo daqui", timestamp),
+        )
+
+        history = await store.recent_messages("5511999999999")
+        assert [(m.role, m.text) for m in history] == [
+            ("owner", "eu assumo daqui")
+        ]
+
+    asyncio.run(exercise())
+
+
 def test_pause_can_be_set_for_a_conversation_with_no_prior_messages() -> None:
     async def exercise() -> None:
         store = InMemoryConversationStore()

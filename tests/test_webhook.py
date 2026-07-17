@@ -971,11 +971,13 @@ def test_pause_silences_replies_stores_text_and_resumes_forward_only(
     assert response.status_code == 200
     assert len(sender.sent) == 1
     assert sender.sent[0][0] == "5511999999999"
-    # Pause-era messages were stored (no assistant turns among them, since
-    # nothing was ever sent) but never get a late answer after resume —
-    # forward-only (spec story 16).
+    # Pause-era messages were stored (owner text under the owner role, no
+    # assistant turns since nothing was ever sent) but never get a late
+    # answer after resume — forward-only (spec story 16).
     assert [(m.role, m.text) for m in answerer.histories[0]] == [
+        ("owner", "eu assumo daqui"),
         ("user", "ainda ai?"),
+        ("owner", "so um minuto"),
         ("user", "oi de novo"),
     ]
     assert answerer.seen == [("oi bella", RouteCategory.COURSE_QUESTION)]
@@ -1030,7 +1032,62 @@ def test_duplicate_delivery_during_pause_stores_the_message_only_once(
     now[0] += timedelta(hours=2)
     client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="DUP-PAUSE-AFTER"))
 
-    assert [m.text for m in answerer.histories[0]] == ["oi de novo"]
+    # "assumindo" is the owner's takeover message (stored once, under the
+    # owner role); the duplicate delivery of "oi de novo" must still be
+    # stored only once.
+    assert [(m.role, m.text) for m in answerer.histories[0]] == [
+        ("owner", "assumindo"),
+        ("user", "oi de novo"),
+    ]
+
+
+def test_owner_text_during_takeover_is_stored_under_owner_role_and_survives_resume(
+    sender: FakeSender,
+) -> None:
+    now = [datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, answerer=answerer, takeover_clock=lambda: now[0])
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "aqui é o Renato, vou te dar 10% de desconto",
+            message_id="OWNER-TEXT-TAKEOVER",
+            from_me=True,
+        ),
+    )
+
+    now[0] += timedelta(hours=1, minutes=1)  # past expiry, resumes
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="OWNER-TEXT-AFTER"))
+
+    # Distinguishable from an assistant turn: stored (and later replayed)
+    # under the owner role, not assistant (ticket 03).
+    assert [(m.role, m.text) for m in answerer.histories[0]] == [
+        ("owner", "aqui é o Renato, vou te dar 10% de desconto"),
+    ]
+
+
+def test_owner_media_during_takeover_stores_nothing(sender: FakeSender) -> None:
+    now = [datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, answerer=answerer, takeover_clock=lambda: now[0])
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None,
+            message_id="OWNER-MEDIA-TAKEOVER",
+            from_me=True,
+            message_type="image",
+        ),
+    )
+
+    now[0] += timedelta(hours=1, minutes=1)  # past expiry, resumes
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="OWNER-MEDIA-AFTER"))
+
+    # The pause still re-armed (test_foreign_from_me_media_message_also_pauses
+    # covers that); here only the "stores nothing" half of the ticket.
+    assert answerer.histories[0] == []
 
 
 def test_pause_survives_service_restart(sender: FakeSender) -> None:

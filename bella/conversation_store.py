@@ -11,7 +11,7 @@ from bella.database import require_database_name
 
 HISTORY_LIMIT = 50
 
-MessageRole = Literal["user", "assistant"]
+MessageRole = Literal["user", "assistant", "owner"]
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ _SCHEMA_STATEMENTS = (
         id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         phone_number TEXT NOT NULL
             REFERENCES conversations(phone_number) ON DELETE CASCADE,
-        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'owner')),
         text TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL
     )
@@ -132,6 +132,21 @@ _SCHEMA_STATEMENTS = (
     """
     CREATE INDEX IF NOT EXISTS conversation_messages_recent
         ON conversation_messages (phone_number, created_at DESC, id DESC)
+    """,
+    # The role CHECK above is inline and unnamed, so Postgres auto-names it
+    # conversation_messages_role_check on both the fresh-database CREATE
+    # TABLE and any pre-ticket-03 database. Plain ADD CONSTRAINT has no IF
+    # NOT EXISTS, so drop-then-add (safe to repeat every start, same spirit
+    # as the ADD COLUMN IF NOT EXISTS above) is the idempotent way to widen
+    # an existing deployment's constraint to accept the Owner role.
+    """
+    ALTER TABLE conversation_messages
+        DROP CONSTRAINT IF EXISTS conversation_messages_role_check
+    """,
+    """
+    ALTER TABLE conversation_messages
+        ADD CONSTRAINT conversation_messages_role_check
+            CHECK (role IN ('user', 'assistant', 'owner'))
     """,
     """
     CREATE TABLE IF NOT EXISTS webhook_deliveries (

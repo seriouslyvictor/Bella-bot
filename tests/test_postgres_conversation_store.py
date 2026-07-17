@@ -140,6 +140,63 @@ def test_postgres_schema_migration_adds_paused_until_to_an_existing_table() -> N
     run_async(exercise())
 
 
+def test_postgres_schema_migration_widens_role_check_to_accept_owner() -> None:
+    """Simulates a database created by the previous schema version (role
+    CHECK limited to user/assistant) — the current schema statements must
+    widen the constraint in place, not just on a fresh CREATE TABLE
+    (ticket 03)."""
+
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as connection:
+            await connection.execute(
+                "CREATE TABLE IF NOT EXISTS conversations ("
+                "  phone_number TEXT PRIMARY KEY,"
+                "  last_message_at TIMESTAMPTZ NOT NULL,"
+                "  paused_until TIMESTAMPTZ"
+                ")"
+            )
+            await connection.execute(
+                "CREATE TABLE IF NOT EXISTS conversation_messages ("
+                "  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,"
+                "  phone_number TEXT NOT NULL"
+                "    REFERENCES conversations(phone_number) ON DELETE CASCADE,"
+                "  role TEXT NOT NULL,"
+                "  text TEXT NOT NULL,"
+                "  created_at TIMESTAMPTZ NOT NULL"
+                ")"
+            )
+            # Force the pre-ticket-03 constraint shape regardless of what an
+            # earlier test run against this database left behind.
+            await connection.execute(
+                "ALTER TABLE conversation_messages "
+                "DROP CONSTRAINT IF EXISTS conversation_messages_role_check"
+            )
+            await connection.execute(
+                "ALTER TABLE conversation_messages "
+                "ADD CONSTRAINT conversation_messages_role_check "
+                "CHECK (role IN ('user', 'assistant'))"
+            )
+            await connection.commit()
+
+        migrated_store = PostgresConversationStore(DATABASE_URL)
+        await migrated_store.start()  # must not raise widening the constraint
+        try:
+            phone_number = f"test-{uuid4()}"
+            await migrated_store.append_message(
+                phone_number,
+                ConversationMessage(
+                    "owner", "eu assumo daqui", datetime(2026, 7, 16, tzinfo=UTC)
+                ),
+            )
+            history = await migrated_store.recent_messages(phone_number)
+            assert [m.role for m in history] == ["owner"]
+        finally:
+            await migrated_store.close()
+
+    run_async(exercise())
+
+
 def test_postgres_retention_deletes_only_idle_conversations() -> None:
     async def exercise() -> None:
         assert DATABASE_URL is not None
