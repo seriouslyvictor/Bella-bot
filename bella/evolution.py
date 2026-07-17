@@ -33,6 +33,36 @@ class InboundMessage:
         return self.chat_jid.split("@", 1)[0]
 
 
+def _canonical_chat_jid(info: dict[str, Any]) -> str | None:
+    """The conversation key: the peer's phone-number JID whenever it exists.
+
+    In LID-addressed chats (WhatsApp's privacy aliases, `<digits>@lid`),
+    Info.Chat is the peer's LID — and Evolution GO rewrites it to the
+    phone-number JID only on inbound messages, because its LID/PN swap
+    keys off SenderAlt, which whatsmeow leaves empty on from-me messages.
+    Keying on Chat alone therefore splits one conversation in two: the
+    owner's Takeover messages under the LID, the user's messages under the
+    phone number — so the pause never bites and owner turns land in the
+    wrong history. The phone number always travels alongside the LID:
+    RecipientAlt on from-me messages, SenderAlt on inbound ones (when the
+    swap has not already promoted it into Chat).
+    """
+    chat_jid = info.get("Chat")
+    if not isinstance(chat_jid, str):
+        return None
+    if not chat_jid.endswith("@lid"):
+        return chat_jid
+    alt = info.get("RecipientAlt") if info.get("IsFromMe") else info.get("SenderAlt")
+    if isinstance(alt, str) and alt.endswith("@s.whatsapp.net"):
+        # Alt JIDs can carry a device suffix (user:device@server); the
+        # conversation key is the bare user part.
+        user = alt.split("@", 1)[0].split(":", 1)[0]
+        return f"{user}@s.whatsapp.net"
+    # No phone number in the payload: keep the LID so at least both
+    # directions of a chat missing it key consistently.
+    return chat_jid
+
+
 def parse_webhook(payload: Any) -> InboundMessage | None:
     """Normalize an Evolution GO webhook delivery into an InboundMessage.
 
@@ -49,8 +79,8 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
     if not isinstance(info, dict):
         return None
     message_id = info.get("ID")
-    chat_jid = info.get("Chat")
-    if not isinstance(message_id, str) or not isinstance(chat_jid, str):
+    chat_jid = _canonical_chat_jid(info)
+    if not isinstance(message_id, str) or chat_jid is None:
         return None
 
     text = _extract_text(data.get("Message"))

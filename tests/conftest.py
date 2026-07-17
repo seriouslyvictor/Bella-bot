@@ -175,9 +175,17 @@ def make_webhook_payload(
     from_me: bool = False,
     is_group: bool = False,
     chat: str = "5511999999999@s.whatsapp.net",
+    sender_alt: str = "",
+    recipient_alt: str = "",
     message_type: str = "text",
 ) -> dict[str, Any]:
-    """Simulates an Evolution GO 'Message' webhook delivery."""
+    """Simulates an Evolution GO 'Message' webhook delivery.
+
+    LID-addressed chats put the peer's `@lid` alias in Chat and carry the
+    phone number in SenderAlt (inbound) or RecipientAlt (from-me); whatsmeow
+    marshals absent alt JIDs as empty strings, so the defaults mirror the
+    plain phone-number-addressed delivery.
+    """
     message: dict[str, Any] = {}
     if text is not None:
         message["conversation"] = text
@@ -187,6 +195,8 @@ def make_webhook_payload(
             "Info": {
                 "Chat": chat,
                 "Sender": chat,
+                "SenderAlt": sender_alt,
+                "RecipientAlt": recipient_alt,
                 "IsFromMe": from_me,
                 "IsGroup": is_group,
                 "ID": message_id,

@@ -156,6 +156,9 @@ def test_apostila_request_without_pdf_gets_coming_soon_reply(
         sender,
         scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
         answerer=answerer,
+        # Explicitly absent: the shipped content directory may or may not
+        # hold the real PDF depending on the checkout.
+        apostila_path=Path("content/apostila-not-yet-shipped.pdf"),
     )
 
     client.post(
@@ -249,6 +252,7 @@ def test_apostila_unavailable_reply_mirrors_english(sender: FakeSender) -> None:
     client = make_test_client(
         sender,
         scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=Path("content/apostila-not-yet-shipped.pdf"),
     )
 
     client.post(
@@ -1108,6 +1112,137 @@ def test_pause_survives_service_restart(sender: FakeSender) -> None:
 
     assert response.status_code == 200
     assert sender.sent == []
+
+
+# --- LID-addressed chats key to the phone number ----------------------------
+#
+# WhatsApp's LID migration puts a `<digits>@lid` alias in Info.Chat, and
+# Evolution GO rewrites it to the phone-number JID only on inbound messages
+# (its swap needs SenderAlt, which is empty on from-me messages). The
+# conversation key must come out identical for both directions or the pause
+# splits across two histories and never silences Bella.
+
+
+def test_takeover_pause_holds_in_a_lid_addressed_chat(sender: FakeSender) -> None:
+    # The live failure of 2026-07-17: owner types in (Chat is the user's
+    # @lid, phone number only in RecipientAlt), then the user's inbound
+    # arrives already swapped to the phone-number JID by Evolution GO.
+    now = [datetime(2026, 7, 17, 12, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, answerer=answerer, takeover_clock=lambda: now[0])
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "pode deixar comigo",
+            message_id="LID-TAKEOVER",
+            from_me=True,
+            chat="236313319247382@lid",
+            recipient_alt="5511999999999@s.whatsapp.net",
+        ),
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("ainda ai?", message_id="LID-USER-DURING-PAUSE"),
+    )
+    assert sender.sent == []
+    assert answerer.seen == []
+
+    # After expiry the owner's turn is in the SAME history the answerer
+    # replays — not stranded under the LID key.
+    now[0] += timedelta(hours=1, minutes=1)
+    client.post(
+        WEBHOOK, json=make_webhook_payload("oi bella", message_id="LID-AFTER-EXPIRY")
+    )
+    assert [(m.role, m.text) for m in answerer.histories[0]] == [
+        ("owner", "pode deixar comigo"),
+        ("user", "ainda ai?"),
+    ]
+    assert len(sender.sent) == 1
+    assert sender.sent[0][0] == "5511999999999"
+
+
+def test_inbound_lid_chat_without_the_swap_keys_to_the_phone_number(
+    sender: FakeSender,
+) -> None:
+    # Source-agnostic robustness: an inbound delivery whose Chat is still the
+    # @lid alias (Evolution GO's swap not applied) must reply to the phone
+    # number carried in SenderAlt, not to the LID digits.
+    client = make_test_client(sender)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "quero saber do curso",
+            message_id="LID-UNSWAPPED-INBOUND",
+            chat="236313319247382@lid",
+            sender_alt="5511999999999@s.whatsapp.net",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    assert sender.sent[0][0] == "5511999999999"
+
+
+def test_alt_jid_device_suffix_is_stripped_from_the_conversation_key(
+    sender: FakeSender,
+) -> None:
+    # whatsmeow copies the sender's device onto alt JIDs (user:device@server);
+    # the key and the reply target must be the bare number.
+    client = make_test_client(sender)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "oi",
+            message_id="LID-DEVICE-SUFFIX",
+            chat="236313319247382@lid",
+            sender_alt="5511999999999:12@s.whatsapp.net",
+        ),
+    )
+
+    assert len(sender.sent) == 1
+    assert sender.sent[0][0] == "5511999999999"
+
+
+def test_voltar_with_the_phone_number_resumes_a_lid_addressed_takeover(
+    sender: FakeSender,
+) -> None:
+    # The Handoff Notification gives the owner the user's phone number, so
+    # that is what `voltar` carries — it must find the pause even though the
+    # takeover arrived LID-addressed.
+    client = make_test_client(sender, admin_contact="5511888888888")
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo",
+            message_id="LID-VOLTAR-TAKEOVER",
+            from_me=True,
+            chat="236313319247382@lid",
+            recipient_alt="5511999999999@s.whatsapp.net",
+        ),
+    )
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "voltar 5511999999999",
+            message_id="LID-VOLTAR-COMMAND",
+            chat="5511888888888@s.whatsapp.net",
+        ),
+    )
+
+    confirmations = [text for number, text in sender.sent if number == "5511888888888"]
+    assert confirmations == ["Bella reativada para 5511999999999."]
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi de novo", message_id="LID-AFTER-VOLTAR"),
+    )
+    assert response.status_code == 200
+    assert [number for number, _ in sender.sent].count("5511999999999") == 1
 
 
 # --- Control Channel: voltar early resume (ticket 04) ----------------------

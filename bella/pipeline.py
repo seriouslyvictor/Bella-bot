@@ -316,7 +316,12 @@ class Pipeline:
                 message.number,
                 ConversationMessage("owner", message.text, datetime.now(UTC)),
             )
-        logger.info("takeover pause set for %s until %s", message.number, until)
+        logger.info(
+            "takeover pause set for %s (%d min, until %s)",
+            message.number,
+            int(self._takeover_pause_window.total_seconds() // 60),
+            until.isoformat(timespec="minutes"),
+        )
 
     async def _handle_control_channel(self, message: InboundMessage) -> bool:
         """Admin-number commands are parsed deterministically, before the
