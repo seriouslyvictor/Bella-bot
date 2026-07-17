@@ -24,6 +24,7 @@ from typing import Protocol
 
 from bella.answer_guard import strip_foreign_urls
 from bella.canned_replies import CannedReplies
+from bella.control_channel import not_paused_reply, parse_command, resumed_reply
 from bella.conversation_store import (
     ConversationMessage,
     ConversationStore,
@@ -225,6 +226,12 @@ class Pipeline:
         if message.is_from_me:
             await self._handle_takeover_signal(message)
             return
+        if (
+            self._admin_contact
+            and message.number == self._admin_contact
+            and await self._handle_control_channel(message)
+        ):
+            return
         if await self._pause_active(message.number):
             # The human owns this conversation's reply obligation (ADR 0003):
             # store text for context, but no Scope Gate, no LLM, no canned
@@ -310,6 +317,35 @@ class Pipeline:
                 ConversationMessage("owner", message.text, datetime.now(UTC)),
             )
         logger.info("takeover pause set for %s until %s", message.number, until)
+
+    async def _handle_control_channel(self, message: InboundMessage) -> bool:
+        """Admin-number commands are parsed deterministically, before the
+        Scope Gate/LLM (spec story 11) — and before the pause check, so
+        `voltar` still works even though the admin's own chat could itself
+        be paused (spec story 8; harmless per ADR 0003). Returns False for
+        unrecognized text so the caller falls through to the normal
+        pipeline (spec story 12). A command is control traffic, not
+        conversation: it is never appended to history or fed to the rate
+        limiter, but delivery was already deduped by claim_delivery above,
+        so a redelivered `voltar` is not double-confirmed.
+        """
+        if message.text is None:
+            return False
+        command = parse_command(message.text)
+        if command is None:
+            return False
+        if await self._pause_active(command.target_number):
+            await self._conversation_store.clear_pause(command.target_number)
+            reply = resumed_reply(command.target_number)
+        else:
+            reply = not_paused_reply(command.target_number)
+        await self._send_text(message.number, reply)
+        logger.info(
+            "control channel voltar handled for %s (message %s)",
+            command.target_number,
+            message.message_id,
+        )
+        return True
 
     async def _pause_active(self, phone_number: str) -> bool:
         until = await self._conversation_store.paused_until(phone_number)

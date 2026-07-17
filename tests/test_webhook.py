@@ -1108,3 +1108,164 @@ def test_pause_survives_service_restart(sender: FakeSender) -> None:
 
     assert response.status_code == 200
     assert sender.sent == []
+
+
+# --- Control Channel: voltar early resume (ticket 04) ----------------------
+
+
+ADMIN = "5511888888888"
+ADMIN_CHAT = f"{ADMIN}@s.whatsapp.net"
+USER = "5511999999999"
+
+
+def _pause_user(client: TestClient, message_id: str = "VOLTAR-TAKEOVER") -> None:
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("assumindo", message_id=message_id, from_me=True),
+    )
+
+
+def test_voltar_clears_pause_and_next_user_message_gets_normal_reply(
+    sender: FakeSender,
+) -> None:
+    gate = FakeScopeGate()
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender, scope_gate=gate, answerer=answerer, admin_contact=ADMIN
+    )
+    _pause_user(client)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            f"voltar {USER}", message_id="VOLTAR-CMD", chat=ADMIN_CHAT
+        ),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
+    # The command itself never touches the Scope Gate or the LLM answerer.
+    assert gate.seen == []
+    assert answerer.seen == []
+
+    client.post(
+        WEBHOOK, json=make_webhook_payload("oi de novo", message_id="AFTER-VOLTAR")
+    )
+    assert sender.sent[-1][0] == USER
+    assert answerer.seen == [("oi de novo", RouteCategory.COURSE_QUESTION)]
+
+
+def test_voltar_targeting_non_paused_conversation_gets_honest_notice(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(sender, admin_contact=ADMIN)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            f"voltar {USER}", message_id="VOLTAR-NOT-PAUSED", chat=ADMIN_CHAT
+        ),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [(ADMIN, f"Nenhuma pausa ativa para {USER}.")]
+
+
+def test_voltar_number_matching_tolerates_formatting(sender: FakeSender) -> None:
+    client = make_test_client(sender, admin_contact=ADMIN)
+    _pause_user(client)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "voltar +55 (11) 99999-9999",
+            message_id="VOLTAR-FORMATTED",
+            chat=ADMIN_CHAT,
+        ),
+    )
+
+    assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
+
+
+def test_voltar_is_case_insensitive_and_tolerates_surrounding_whitespace(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(sender, admin_contact=ADMIN)
+    _pause_user(client)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            f"  VOLTAR   {USER}  ", message_id="VOLTAR-CASE", chat=ADMIN_CHAT
+        ),
+    )
+
+    assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
+
+
+def test_redelivered_voltar_is_deduped_not_double_confirmed(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(sender, admin_contact=ADMIN)
+    _pause_user(client)
+    payload = make_webhook_payload(
+        f"voltar {USER}", message_id="VOLTAR-DUP", chat=ADMIN_CHAT
+    )
+
+    first = client.post(WEBHOOK, json=payload)
+    second = client.post(WEBHOOK, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
+
+
+def test_non_command_admin_message_flows_through_normal_pipeline(
+    sender: FakeSender,
+) -> None:
+    gate = FakeScopeGate()
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender, scope_gate=gate, answerer=answerer, admin_contact=ADMIN
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "oi bella, so testando", message_id="ADMIN-NOT-COMMAND", chat=ADMIN_CHAT
+        ),
+    )
+
+    # The owner can still test Bella from their own phone (spec story 12).
+    assert gate.seen == ["oi bella, so testando"]
+    assert answerer.seen == [("oi bella, so testando", RouteCategory.COURSE_QUESTION)]
+    assert sender.sent == [(ADMIN, "placeholder answer: oi bella, so testando")]
+
+
+def test_voltar_works_even_if_the_admin_chat_itself_is_paused(
+    sender: FakeSender,
+) -> None:
+    # Ticket 02 allows a from-me message into the admin's own chat to pause
+    # that "conversation" too (harmless per ADR 0003). The command check
+    # must run before the pause check so voltar still works in that case.
+    client = make_test_client(sender, admin_contact=ADMIN)
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo aqui tambem",
+            message_id="ADMIN-CHAT-TAKEOVER",
+            from_me=True,
+            chat=ADMIN_CHAT,
+        ),
+    )
+    _pause_user(client)
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            f"voltar {USER}", message_id="VOLTAR-DESPITE-ADMIN-PAUSE", chat=ADMIN_CHAT
+        ),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
