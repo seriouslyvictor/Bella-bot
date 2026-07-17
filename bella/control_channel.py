@@ -27,7 +27,10 @@ def parse_command(text: str) -> VoltarCommand | None:
     Number matching is digits-only and tolerant of formatting (punctuation,
     spaces, country-code spacing) so the owner can paste straight from a
     Handoff Notification. Anything unrecognized returns None so the caller
-    falls through to the normal pipeline (spec story 12).
+    falls through to the normal pipeline (spec story 12). Matching is exact
+    on digits, so a manually typed number that differs from the stored key
+    (e.g. a missing country code) safely yields the honest not-paused notice
+    rather than resuming a wrong chat.
     """
     match = _VOLTAR_PATTERN.match(text.strip())
     if match is None:

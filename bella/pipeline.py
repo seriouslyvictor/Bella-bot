@@ -216,9 +216,9 @@ class Pipeline:
 
     async def _handle(self, message: InboundMessage) -> None:
         if message.is_group:
-            # Bella never speaks in groups (spec story 24), from-me or not.
-            # Full input policy lands in ticket 09, but this guard must
-            # precede deployment.
+            # Bella never speaks in groups (Bella v1 spec story 24), from-me
+            # or not. Full input policy lands in ticket 09, but this guard
+            # must precede deployment.
             return
         if not await self._conversation_store.claim_delivery(message.message_id):
             logger.info("duplicate delivery ignored: %s", message.message_id)
@@ -361,16 +361,22 @@ class Pipeline:
         except Exception:
             self._echo_ledger.cancel(key)
             raise
-        self._echo_ledger.record_id(key, message_id)
+        if message_id:
+            self._echo_ledger.record_id(key, message_id)
 
     async def _send_document(self, number: str, path: Path, caption: str) -> None:
+        """A document echo carries no text, so it can only match by provider
+        id: a document echo that beats the send response (including one
+        whose id extraction failed) mis-pauses that conversation for one
+        window, within ADR 0003's accepted bounded-failure envelope."""
         key = self._echo_ledger.register(number, caption)
         try:
             message_id = await self._sender.send_document(number, path, caption)
         except Exception:
             self._echo_ledger.cancel(key)
             raise
-        self._echo_ledger.record_id(key, message_id)
+        if message_id:
+            self._echo_ledger.record_id(key, message_id)
 
     async def _notify_admin(self, user_number: str, summary: str) -> None:
         if not self._admin_contact or user_number == self._admin_contact:

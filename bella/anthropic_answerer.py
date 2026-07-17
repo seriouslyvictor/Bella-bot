@@ -59,8 +59,16 @@ def _build_messages(
     The API only accepts user/assistant roles, so an Owner-role turn (a
     human's words during a takeover, never Bella's) is reframed as a
     user-role turn wrapping the text in an explicit <owner_message> marker
-    — PERSONA_AND_RULES tells the model what that marker means. Kept as a
-    pure function so the framing is unit-testable without an API call.
+    — PERSONA_AND_RULES tells the model what that marker means. Historical
+    user turns are likewise wrapped, in <user_message>, so a user who types a
+    literal <owner_message> block cannot forge a turn that is structurally
+    indistinguishable from a genuine owner turn; only history built here ever
+    carries those markers. Trust boundary: markers are applied once, at this
+    function, so a forged marker inside a user's own text always ends up
+    nested inside a user_message wrapper, never at the top level of a turn.
+    Assistant turns are replayed raw — they are Bella's own prior output, not
+    untrusted input. Kept as a pure function so the framing is
+    unit-testable without an API call.
     """
     messages: list[MessageParam] = []
     for message in history:
@@ -69,6 +77,13 @@ def _build_messages(
                 {
                     "role": "user",
                     "content": f"<owner_message>\n{message.text}\n</owner_message>",
+                }
+            )
+        elif message.role == "user":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"<user_message>\n{message.text}\n</user_message>",
                 }
             )
         else:

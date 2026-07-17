@@ -7,11 +7,14 @@ instance's payloads ever differ, this is the only place to adjust.
 
 import asyncio
 import base64
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+
+logger = logging.getLogger("bella")
 
 
 @dataclass(frozen=True)
@@ -83,14 +86,21 @@ def _read_base64(path: Path) -> str:
 
 def _extract_message_id(payload: Any) -> str:
     """Send-endpoint responses wrap the sent message in the same Info.ID
-    shape as webhook deliveries (data.Info.ID)."""
+    shape as webhook deliveries (data.Info.ID).
+
+    Best-effort: the send already succeeded (the response was a 200) by the
+    time this runs, so a missing or malformed id must not turn a delivered
+    message into an error reply. On a miss this logs a warning and returns
+    "" instead of raising; the pipeline's EchoLedger treats an empty id as
+    unregistered and, for text sends, still has the (recipient, text)
+    fallback to recognize its own echo.
+    """
     data = payload.get("data") if isinstance(payload, dict) else None
     info = data.get("Info") if isinstance(data, dict) else None
     message_id = info.get("ID") if isinstance(info, dict) else None
     if not isinstance(message_id, str):
-        # No payload in the error: send responses carry the message body and
-        # recipient, and this exception ends up in the logs.
-        raise ValueError("Evolution GO send response missing data.Info.ID")
+        logger.warning("Evolution GO send response missing data.Info.ID")
+        return ""
     return message_id
 
 

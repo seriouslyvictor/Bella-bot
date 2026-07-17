@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
 
 from psycopg_pool import AsyncConnectionPool
@@ -40,6 +40,10 @@ class ConversationStore(Protocol):
 
     async def delete_conversations_idle_before(self, cutoff: datetime) -> int: ...
 
+    # Every from-me echo claims a delivery row too (load-bearing dedupe), so
+    # webhook_deliveries needs its own pruning independent of conversations.
+    async def delete_deliveries_before(self, cutoff: datetime) -> int: ...
+
     # Takeover Pause state (ADR 0003). A conversation may have no prior
     # messages when a pause is first set, so set_pause must create the
     # conversation record rather than assume it exists.
@@ -55,7 +59,7 @@ class InMemoryConversationStore:
 
     def __init__(self) -> None:
         self._messages: dict[str, list[ConversationMessage]] = defaultdict(list)
-        self._delivery_ids: set[str] = set()
+        self._delivery_ids: dict[str, datetime] = {}
         self._paused_until: dict[str, datetime] = {}
 
     async def start(self) -> None:
@@ -70,7 +74,7 @@ class InMemoryConversationStore:
     async def claim_delivery(self, message_id: str) -> bool:
         if message_id in self._delivery_ids:
             return False
-        self._delivery_ids.add(message_id)
+        self._delivery_ids[message_id] = datetime.now(UTC)
         return True
 
     async def append_message(
@@ -93,6 +97,16 @@ class InMemoryConversationStore:
             del self._messages[phone_number]
             self._paused_until.pop(phone_number, None)
         return len(idle_numbers)
+
+    async def delete_deliveries_before(self, cutoff: datetime) -> int:
+        expired_ids = [
+            message_id
+            for message_id, received_at in self._delivery_ids.items()
+            if received_at < cutoff
+        ]
+        for message_id in expired_ids:
+            del self._delivery_ids[message_id]
+        return len(expired_ids)
 
     async def paused_until(self, phone_number: str) -> datetime | None:
         return self._paused_until.get(phone_number)
@@ -265,6 +279,19 @@ class PostgresConversationStore:
             removed = await cursor.fetchall()
         return len(removed)
 
+    async def delete_deliveries_before(self, cutoff: datetime) -> int:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                DELETE FROM webhook_deliveries
+                WHERE received_at < %s
+                RETURNING message_id
+                """,
+                (cutoff,),
+            )
+            removed = await cursor.fetchall()
+        return len(removed)
+
     async def paused_until(self, phone_number: str) -> datetime | None:
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
@@ -278,16 +305,16 @@ class PostgresConversationStore:
         async with self._pool.connection() as connection:
             # The conversation row may not exist yet (a takeover can be the
             # first activity in a chat), and last_message_at is NOT NULL, so
-            # this upsert supplies `until` as that placeholder on insert; an
-            # existing row's last_message_at is left untouched.
+            # this upsert supplies the DB wall clock as that placeholder on
+            # insert; an existing row's last_message_at is left untouched.
             await connection.execute(
                 """
                 INSERT INTO conversations (phone_number, last_message_at, paused_until)
-                VALUES (%s, %s, %s)
+                VALUES (%s, CURRENT_TIMESTAMP, %s)
                 ON CONFLICT (phone_number) DO UPDATE
                 SET paused_until = EXCLUDED.paused_until
                 """,
-                (phone_number, until, until),
+                (phone_number, until),
             )
 
     async def clear_pause(self, phone_number: str) -> None:

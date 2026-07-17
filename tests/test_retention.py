@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
-from bella.retention import delete_expired_conversations
+from bella.retention import (
+    DELIVERY_RETENTION,
+    delete_expired_conversations,
+    delete_expired_deliveries,
+)
 
 
 def test_retention_logs_the_number_of_idle_conversations_removed(
@@ -27,5 +31,29 @@ def test_retention_logs_the_number_of_idle_conversations_removed(
             "retention removed 1 conversation(s) idle for more than 120 days"
             in caplog.text
         )
+
+    asyncio.run(exercise())
+
+
+def test_retention_logs_the_number_of_expired_deliveries_removed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def exercise() -> None:
+        store = InMemoryConversationStore()
+        await store.claim_delivery("old-delivery")
+        # claim_delivery stamps the real wall clock, so pushing the reference
+        # time past the retention window (instead of sleeping) is enough to
+        # put that claim before the computed cutoff.
+        future_reference = datetime.now(UTC) + DELIVERY_RETENTION + timedelta(days=1)
+
+        with caplog.at_level(logging.INFO, logger="bella"):
+            removed = await delete_expired_deliveries(store, now=future_reference)
+
+        assert removed == 1
+        assert (
+            "retention removed 1 webhook delivery id(s) older than 7 days"
+            in caplog.text
+        )
+        assert await store.claim_delivery("old-delivery") is True
 
     asyncio.run(exercise())

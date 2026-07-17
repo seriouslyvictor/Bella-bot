@@ -63,6 +63,30 @@ def test_retention_deletes_only_conversations_idle_for_more_than_120_days() -> N
     asyncio.run(exercise())
 
 
+def test_delete_deliveries_before_prunes_only_claims_older_than_the_cutoff() -> None:
+    async def exercise() -> None:
+        store = InMemoryConversationStore()
+        await store.claim_delivery("a")
+        await store.claim_delivery("b")
+
+        # A cutoff safely before both claims (which happened just now) prunes
+        # nothing; both ids stay claimed.
+        before_claims = datetime.now(UTC) - timedelta(days=1)
+        assert await store.delete_deliveries_before(before_claims) == 0
+        assert await store.claim_delivery("a") is False
+
+        # A cutoff safely after both claims prunes both, freeing the ids to
+        # be reclaimed.
+        after_claims = datetime.now(UTC) + timedelta(days=1)
+        removed = await store.delete_deliveries_before(after_claims)
+
+        assert removed == 2
+        assert await store.claim_delivery("a") is True
+        assert await store.claim_delivery("b") is True
+
+    asyncio.run(exercise())
+
+
 def test_production_store_refuses_to_connect_to_an_evolution_database() -> None:
     with pytest.raises(ValueError, match="must point to the 'bella' database"):
         PostgresConversationStore(

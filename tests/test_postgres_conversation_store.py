@@ -106,6 +106,35 @@ def test_postgres_pause_can_be_set_for_a_conversation_with_no_prior_messages() -
     run_async(exercise())
 
 
+def test_postgres_delete_deliveries_before_prunes_only_older_claims() -> None:
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        store = PostgresConversationStore(DATABASE_URL)
+        await store.start()
+        try:
+            # Clear any deliveries a previous run against this database left
+            # behind, so this test only sees the two ids it claims below.
+            await store.delete_deliveries_before(datetime(9999, 1, 1, tzinfo=UTC))
+            old_id = f"delivery-old-{uuid4()}"
+            recent_id = f"delivery-recent-{uuid4()}"
+            assert await store.claim_delivery(old_id) is True
+            assert await store.claim_delivery(recent_id) is True
+
+            before_claims = datetime.now(UTC) - timedelta(days=1)
+            assert await store.delete_deliveries_before(before_claims) == 0
+
+            after_claims = datetime.now(UTC) + timedelta(days=1)
+            removed = await store.delete_deliveries_before(after_claims)
+
+            assert removed == 2
+            assert await store.claim_delivery(old_id) is True
+            assert await store.claim_delivery(recent_id) is True
+        finally:
+            await store.close()
+
+    run_async(exercise())
+
+
 def test_postgres_schema_migration_adds_paused_until_to_an_existing_table() -> None:
     """Simulates a database created by the previous schema version (before
     paused_until existed) — the current schema statements must still apply

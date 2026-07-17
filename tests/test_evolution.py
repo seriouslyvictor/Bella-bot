@@ -126,6 +126,47 @@ def test_send_document_returns_the_providers_message_id(tmp_path: Path) -> None:
     assert message_id == "3EB0000000000000000007"
 
 
+def test_send_text_returns_empty_id_when_response_lacks_info_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "success"})
+
+    sender = EvolutionSender(
+        base_url="http://evolution-go:8080",
+        api_key="the-instance-token",
+        instance_id="an-instance-id",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    # The message was already delivered (a 200 response) — a missing or
+    # malformed id must not raise and turn a delivered message into an
+    # error reply; it degrades to the empty-id fallback instead.
+    message_id = asyncio.run(sender.send_text("5511999999999", "oi"))
+
+    assert message_id == ""
+
+
+def test_send_document_returns_empty_id_when_response_lacks_info_id(
+    tmp_path: Path,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "success"})
+
+    document = tmp_path / "apostila.pdf"
+    document.write_bytes(b"%PDF-1.7 test")
+    sender = EvolutionSender(
+        base_url="http://evolution-go:8080",
+        api_key="the-instance-token",
+        instance_id="an-instance-id",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    message_id = asyncio.run(
+        sender.send_document("5511999999999", document, "Boa leitura!")
+    )
+
+    assert message_id == ""
+
+
 def test_health_check_uses_the_unlicensed_server_endpoint() -> None:
     seen: list[httpx.Request] = []
 
