@@ -53,6 +53,8 @@ class Settings:
     rate_limit_policy: RateLimitPolicy = RateLimitPolicy()
     # Sliding Takeover Pause window (ADR 0003), reset by every human message.
     takeover_pause_seconds: int = 3600
+    seat_count_refresh_seconds: int = 6 * 60 * 60
+    seat_count_max_age_seconds: int = 24 * 60 * 60
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -88,5 +90,11 @@ class Settings:
             ),
             takeover_pause_seconds=_int_from_env(
                 "TAKEOVER_PAUSE_SECONDS", cls.takeover_pause_seconds
+            ),
+            seat_count_refresh_seconds=_int_from_env(
+                "SEAT_COUNT_REFRESH_SECONDS", cls.seat_count_refresh_seconds
+            ),
+            seat_count_max_age_seconds=_int_from_env(
+                "SEAT_COUNT_MAX_AGE_SECONDS", cls.seat_count_max_age_seconds
             ),
         )

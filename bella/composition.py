@@ -6,8 +6,12 @@ build a Pipeline from fakes and hand it to create_app directly; this module is
 imported only by the production entrypoint.
 """
 
+from dataclasses import dataclass
+from datetime import timedelta
+
 from anthropic import AsyncAnthropic
 
+from bella.availability import SenaiAvailabilitySource
 from bella.anthropic_answerer import AnthropicAnswerer
 from bella.anthropic_gate import AnthropicScopeGate
 from bella.canned_replies import CannedReplies
@@ -16,18 +20,30 @@ from bella.conversation_store import PostgresConversationStore
 from bella.course_content import CourseContent
 from bella.evolution import EvolutionSender
 from bella.pipeline import Pipeline
+from bella.seat_count import SeatCountHolder, SeatCountRefresher
 
 
-def build_pipeline(settings: Settings) -> Pipeline:
+@dataclass(frozen=True)
+class Runtime:
+    pipeline: Pipeline
+    seat_count_refresher: SeatCountRefresher
+
+
+def build_runtime(settings: Settings) -> Runtime:
     """Read the content files and wire up every real collaborator, once."""
+    holder = SeatCountHolder(
+        max_age=timedelta(seconds=settings.seat_count_max_age_seconds)
+    )
     content = CourseContent.from_files(
-        settings.knowledge_base_path, settings.enrollment_card_path
+        settings.knowledge_base_path,
+        settings.enrollment_card_path,
+        seat_count_holder=holder,
     )
     # One client, one connection pool: the gate and the answerer both call
     # Anthropic back-to-back on every message. Their timeouts differ, which is
     # a per-request concern (see each module's TIMEOUT), not a per-client one.
     client = AsyncAnthropic(api_key=settings.anthropic_api_key, max_retries=1)
-    return Pipeline(
+    pipeline = Pipeline(
         EvolutionSender(
             base_url=settings.evolution_url,
             api_key=settings.evolution_api_key,
@@ -47,3 +63,10 @@ def build_pipeline(settings: Settings) -> Pipeline:
         settings.rate_limit_policy,
         takeover_pause_seconds=settings.takeover_pause_seconds,
     )
+    source = SenaiAvailabilitySource(content.senai_course_listing_url)
+    refresher = SeatCountRefresher(
+        source,
+        holder,
+        interval_seconds=settings.seat_count_refresh_seconds,
+    )
+    return Runtime(pipeline, refresher)

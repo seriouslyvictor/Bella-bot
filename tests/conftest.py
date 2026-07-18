@@ -13,8 +13,10 @@ from bella.canned_replies import CannedReplies
 from bella.config import Settings
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
 from bella.course_content import CourseContent
+from bella.evolution import PresenceState
 from bella.pipeline import AnswerResult, Pipeline
 from bella.rate_limit import RateLimitPolicy
+from bella.seat_count import SeatCountRefresher
 from bella.scope_gate import RouteCategory
 
 TEST_API_KEY = "test-instance-token"
@@ -30,26 +32,38 @@ class FakeSender:
         fail_document: bool = False,
         fail_numbers: set[str] | None = None,
         unhealthy: bool = False,
+        fail_presence: bool = False,
     ) -> None:
         self.sent: list[tuple[str, str]] = []
         self.sent_documents: list[tuple[str, Path, str]] = []
+        self.presence: list[tuple[str, PresenceState]] = []
+        self.events: list[tuple[str, str, str]] = []
         self.fail = fail
         self.fail_document = fail_document
         self.fail_numbers = fail_numbers or set()
         self.unhealthy = unhealthy
+        self.fail_presence = fail_presence
         self._next_message_id = 1
 
     async def send_text(self, number: str, text: str) -> str:
         if self.fail or number in self.fail_numbers:
             raise RuntimeError("simulated send failure")
         self.sent.append((number, text))
+        self.events.append(("text", number, text))
         return self._issue_message_id()
 
     async def send_document(self, number: str, path: Path, caption: str) -> str:
         if self.fail_document:
             raise RuntimeError("simulated document send failure")
         self.sent_documents.append((number, path, caption))
+        self.events.append(("document", number, caption))
         return self._issue_message_id()
+
+    async def send_presence(self, number: str, state: PresenceState) -> None:
+        self.presence.append((number, state))
+        self.events.append(("presence", number, state))
+        if self.fail_presence:
+            raise RuntimeError("simulated presence failure")
 
     def _issue_message_id(self) -> str:
         message_id = f"FAKE-MSG-{self._next_message_id}"
@@ -147,6 +161,7 @@ def make_test_client(
     rate_limit_clock: Callable[[], float] | None = None,
     takeover_pause_seconds: int = 3600,
     takeover_clock: Callable[[], datetime] | None = None,
+    seat_count_refresher: SeatCountRefresher | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     pipeline = Pipeline(
@@ -164,7 +179,11 @@ def make_test_client(
         takeover_pause_seconds,
         takeover_clock or (lambda: datetime.now(UTC)),
     )
-    app = create_app(make_settings(), pipeline)
+    app = create_app(
+        make_settings(),
+        pipeline,
+        seat_count_refresher=seat_count_refresher,
+    )
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 

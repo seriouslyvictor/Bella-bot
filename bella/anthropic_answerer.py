@@ -51,6 +51,25 @@ class AnswerPayload(BaseModel):
     needs_handoff: bool
 
 
+def _build_system(content: CourseContent) -> list[TextBlockParam]:
+    return [
+        {"type": "text", "text": PERSONA_AND_RULES},
+        {
+            "type": "text",
+            "text": f"<knowledge_base>\n{content.knowledge_base}\n</knowledge_base>",
+        },
+        {
+            "type": "text",
+            "text": (
+                "<enrollment_card>\n"
+                f"{content.render_enrollment_card()}"
+                "</enrollment_card>"
+            ),
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+
 def _build_messages(
     text: str, category: RouteCategory, history: Sequence[ConversationMessage]
 ) -> list[MessageParam]:
@@ -103,18 +122,7 @@ def _build_messages(
 class AnthropicAnswerer:
     def __init__(self, client: AsyncAnthropic, content: CourseContent) -> None:
         self._client = client
-        self._system: list[TextBlockParam] = [
-            {"type": "text", "text": PERSONA_AND_RULES},
-            {
-                "type": "text",
-                "text": f"<knowledge_base>\n{content.knowledge_base}\n</knowledge_base>",
-            },
-            {
-                "type": "text",
-                "text": f"<enrollment_card>\n{content.enrollment_card}\n</enrollment_card>",
-                "cache_control": {"type": "ephemeral"},
-            },
-        ]
+        self._content = content
         self.last_cache_read_tokens = 0
 
     async def answer(
@@ -130,7 +138,7 @@ class AnthropicAnswerer:
             # Sonnet 5 runs adaptive thinking when this is omitted, which would add
             # latency and spend part of MAX_TOKENS before any reply text.
             thinking={"type": "disabled"},
-            system=self._system,
+            system=_build_system(self._content),
             messages=messages,
             output_format=AnswerPayload,
         )

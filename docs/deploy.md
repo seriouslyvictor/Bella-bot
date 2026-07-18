@@ -92,7 +92,21 @@ mount. `APOSTILA_PATH` defaults to `/app/content/apostila.pdf`; adding or
 replacing that host file changes the next apostila request without rebuilding
 the image. `RATE_LIMIT_MAX_MESSAGES` and `RATE_LIMIT_WINDOW_SECONDS` configure
 the per-number sliding window, and the canned cap/media texts remain editable
-in `content/canned_replies.yaml`.
+in `content/canned_replies.yaml`. `SEAT_COUNT_REFRESH_SECONDS` controls how
+often Bella refreshes the official SENAI-SP opening count (default: 21600,
+six hours), while `SEAT_COUNT_MAX_AGE_SECONDS` controls when the last good
+count is omitted as stale (default: 86400, 24 hours).
+
+After deployment, verify the live SENAI-SP availability seam independently
+from the scheduled job:
+
+```text
+docker compose exec bella python -m bella.scripts.check_seat_count
+```
+
+The command prints the current official opening count. A request or
+page-structure failure exits unsuccessfully instead of producing a fallback
+number.
 
 When migrating the repository's previous `.env`, keep the existing
 `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_ID`, `ANTHROPIC_API_KEY`, and display

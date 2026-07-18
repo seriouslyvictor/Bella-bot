@@ -16,7 +16,7 @@ _Avoid_: conflating with the in-class Bella Vista demo
 The Bella Vista Cosméticos chatbot students build on Day 3 of the course. A classroom artifact, unrelated to this repo's runtime.
 
 **Enrollment Card**:
-An editable config file (SENAI URL, unit, next class date, schedule, price) injected into the bot's context. The only source Bella may use for volatile enrollment facts; anything absent from it gets an honest deflection plus the link.
+The model-facing enrollment facts rendered into Bella's context. Its editable config owns the SENAI URLs, unit, next class date, schedule, and price; a fresh seat count may be injected only from the official SENAI availability holder. Stale or unavailable seat counts are omitted. The rendered Enrollment Card is the only source Bella may use for volatile enrollment facts; anything absent from it gets an honest deflection plus the link.
 
 **Scope Gate**:
 The classifier step every inbound message passes before any answer is generated. Labels a message in-scope (course, apostila, enrollment, greetings) or out-of-scope.

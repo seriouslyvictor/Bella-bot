@@ -60,6 +60,30 @@ def test_send_text_returns_the_providers_message_id() -> None:
     assert message_id == "3EB0000000000000000010"
 
 
+def test_presence_uses_evolution_go_chat_presence_contract() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"message": "success"})
+
+    sender = EvolutionSender(
+        base_url="http://evolution-go:8080",
+        api_key="the-instance-token",
+        instance_id="an-instance-id",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    asyncio.run(sender.send_presence("5511999999999", "composing"))
+
+    assert str(seen[0].url) == "http://evolution-go:8080/message/presence"
+    assert seen[0].headers["apikey"] == "the-instance-token"
+    assert seen[0].read().decode() == (
+        '{"number":"5511999999999","state":"composing",'
+        '"isAudio":false,"delay":0}'
+    )
+
+
 def test_send_text_raises_on_error_status() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": "not authorized"})

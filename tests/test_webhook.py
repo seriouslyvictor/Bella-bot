@@ -4,13 +4,20 @@ Everything is driven by POSTing simulated Evolution GO webhook payloads;
 assertions observe only the fake sender and HTTP responses.
 """
 
+import asyncio
+import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from threading import Event, Thread
 
 from fastapi.testclient import TestClient
 from pathlib import Path
+import pytest
 
 from bella.scope_gate import RouteCategory
-from bella.conversation_store import InMemoryConversationStore
+from bella.conversation_store import ConversationMessage, InMemoryConversationStore
+from bella.evolution import PresenceState
+from bella.pipeline import AnswerResult
 from tests.conftest import (
     TEST_API_KEY,
     FakeAnswerer,
@@ -686,6 +693,333 @@ def test_non_message_event_is_acked_and_ignored(
 
     assert response.status_code == 200
     assert sender.sent == []
+
+
+def test_reaction_is_acked_without_reply_or_conversation_history(
+    sender: FakeSender,
+) -> None:
+    answerer = FakeAnswerer()
+    client = make_test_client(sender, answerer=answerer)
+    reaction = make_webhook_payload(
+        None, message_id="REACTION-ADD", message_type="reaction"
+    )
+    reaction["data"]["Message"] = {
+        "reactionMessage": {
+            "key": {"ID": "MESSAGE-BEING-REACTED-TO"},
+            "text": "👍",
+        }
+    }
+
+    response = client.post(WEBHOOK, json=reaction)
+
+    assert response.status_code == 200
+    assert sender.sent == []
+    assert sender.presence == []
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="AFTER-REACTION-HISTORY"),
+    )
+    assert answerer.histories == [[]]
+
+
+def test_reaction_removal_is_acked_and_ignored(sender: FakeSender) -> None:
+    client = make_test_client(sender)
+    removal = make_webhook_payload(
+        None, message_id="REACTION-REMOVE", message_type="reaction"
+    )
+    removal["data"]["Message"] = {
+        "reactionMessage": {
+            "key": {"ID": "MESSAGE-BEING-REACTED-TO"},
+            "text": "",
+        }
+    }
+
+    response = client.post(WEBHOOK, json=removal)
+
+    assert response.status_code == 200
+    assert sender.sent == []
+
+
+def test_from_me_reaction_does_not_start_takeover_pause(sender: FakeSender) -> None:
+    client = make_test_client(sender)
+    reaction = make_webhook_payload(
+        None,
+        message_id="OWNER-REACTION",
+        message_type="reaction",
+        from_me=True,
+    )
+    reaction["data"]["Message"] = {
+        "reactionMessage": {
+            "key": {"ID": "USER-MESSAGE"},
+            "text": "👍",
+        }
+    }
+
+    client.post(WEBHOOK, json=reaction)
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="AFTER-OWNER-REACTION"),
+    )
+
+    assert len(sender.sent) == 1
+
+
+def test_emoji_only_text_message_still_gets_normal_reply(sender: FakeSender) -> None:
+    gate = FakeScopeGate()
+    client = make_test_client(sender, scope_gate=gate)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("👍", message_id="EMOJI-TEXT"),
+    )
+
+    assert gate.seen == ["👍"]
+    assert sender.sent == [("5511999999999", "placeholder answer: 👍")]
+
+
+def test_dropped_reaction_is_logged(
+    sender: FakeSender, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = make_test_client(sender)
+    reaction = make_webhook_payload(
+        None, message_id="REACTION-LOGGED", message_type="reaction"
+    )
+    reaction["data"]["Message"] = {
+        "reactionMessage": {
+            "key": {"ID": "MESSAGE-BEING-REACTED-TO"},
+            "text": "❤️",
+        }
+    }
+
+    with caplog.at_level(logging.INFO, logger="bella"):
+        client.post(WEBHOOK, json=reaction)
+
+    assert "reaction event dropped" in caplog.text
+    assert "REACTION-LOGGED" in caplog.text
+
+
+def test_reply_is_bracketed_by_online_composing_and_paused_presence(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(sender)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="PRESENCE-NORMAL"),
+    )
+
+    assert sender.events == [
+        ("presence", "5511999999999", "available"),
+        ("presence", "5511999999999", "composing"),
+        ("text", "5511999999999", "placeholder answer: oi"),
+        ("presence", "5511999999999", "paused"),
+    ]
+
+
+def test_slow_composing_cannot_finish_after_presence_is_cleared() -> None:
+    class DelayedComposingSender(FakeSender):
+        async def send_presence(
+            self, number: str, state: PresenceState
+        ) -> None:
+            if state == "composing":
+                await asyncio.sleep(0.01)
+            await super().send_presence(number, state)
+
+    sender = DelayedComposingSender()
+    with make_test_client(sender) as client:
+        client.post(
+            WEBHOOK,
+            json=make_webhook_payload("oi", message_id="PRESENCE-SERIAL"),
+        )
+
+    assert [state for _, state in sender.presence] == [
+        "available",
+        "composing",
+        "paused",
+    ]
+
+
+def test_overlapping_replies_clear_presence_only_after_both_finish() -> None:
+    class OverlappingAnswerer(FakeAnswerer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.slow_started = Event()
+            self.release_slow = Event()
+
+        async def answer(
+            self,
+            text: str,
+            category: RouteCategory,
+            history: Sequence[ConversationMessage],
+        ) -> AnswerResult:
+            if text == "slow":
+                self.slow_started.set()
+                await asyncio.to_thread(self.release_slow.wait, 2)
+            return await super().answer(text, category, history)
+
+    answerer = OverlappingAnswerer()
+    sender = FakeSender()
+    with make_test_client(sender, answerer=answerer) as client:
+        slow_request = Thread(
+            target=lambda: client.post(
+                WEBHOOK,
+                json=make_webhook_payload(
+                    "slow", message_id="PRESENCE-OVERLAP-SLOW"
+                ),
+            )
+        )
+        slow_request.start()
+        assert answerer.slow_started.wait(2)
+        try:
+            client.post(
+                WEBHOOK,
+                json=make_webhook_payload(
+                    "fast", message_id="PRESENCE-OVERLAP-FAST"
+                ),
+            )
+            assert "paused" not in [state for _, state in sender.presence]
+        finally:
+            answerer.release_slow.set()
+            slow_request.join(2)
+
+    assert not slow_request.is_alive()
+    assert [state for _, state in sender.presence][-1] == "paused"
+
+
+def test_canned_refusal_and_apostila_document_are_bracketed_by_presence(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    refusal_client = make_test_client(
+        sender, scope_gate=FakeScopeGate(RouteCategory.OUT_OF_SCOPE)
+    )
+    refusal_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("futebol", message_id="PRESENCE-REFUSAL"),
+    )
+    assert [event[2] for event in sender.events if event[0] == "presence"] == [
+        "available",
+        "composing",
+        "paused",
+    ]
+
+    sender.events.clear()
+    sender.presence.clear()
+    apostila = tmp_path / "apostila.pdf"
+    apostila.write_bytes(b"%PDF-1.7 test")
+    apostila_client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=apostila,
+    )
+    apostila_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("apostila", message_id="PRESENCE-APOSTILA"),
+    )
+    assert [event[0] for event in sender.events] == [
+        "presence",
+        "presence",
+        "document",
+        "presence",
+    ]
+
+
+def test_media_reply_and_rate_limit_notice_are_bracketed_by_presence(
+    sender: FakeSender,
+) -> None:
+    media_client = make_test_client(sender)
+    media_client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None, message_id="PRESENCE-MEDIA", message_type="image"
+        ),
+    )
+    assert [state for _, state in sender.presence] == [
+        "available",
+        "composing",
+        "paused",
+    ]
+
+    sender.events.clear()
+    sender.presence.clear()
+    rate_client = make_test_client(sender, rate_limit_max_messages=1)
+    rate_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("primeira", message_id="PRESENCE-RATE-1"),
+    )
+    sender.events.clear()
+    sender.presence.clear()
+    rate_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("segunda", message_id="PRESENCE-RATE-2"),
+    )
+    assert [state for _, state in sender.presence] == [
+        "available",
+        "composing",
+        "paused",
+    ]
+
+
+def test_presence_failure_is_logged_but_reply_is_unchanged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sender = FakeSender(fail_presence=True)
+    client = make_test_client(sender)
+
+    with caplog.at_level(logging.WARNING, logger="bella"):
+        client.post(
+            WEBHOOK,
+            json=make_webhook_payload("oi", message_id="PRESENCE-FAILURE"),
+        )
+
+    assert sender.sent == [("5511999999999", "placeholder answer: oi")]
+    assert "presence signal failed" in caplog.text
+
+
+def test_silent_paths_generate_no_presence(sender: FakeSender) -> None:
+    paused_client = make_test_client(sender)
+    paused_client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "assumindo", message_id="PRESENCE-PAUSE-OWNER", from_me=True
+        ),
+    )
+    paused_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("oi", message_id="PRESENCE-PAUSE-USER"),
+    )
+    assert sender.presence == []
+
+    group_client = make_test_client(sender)
+    group_client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "oi grupo",
+            message_id="PRESENCE-GROUP",
+            chat="1203630@g.us",
+            is_group=True,
+        ),
+    )
+    assert sender.presence == []
+
+    rate_sender = FakeSender()
+    rate_client = make_test_client(rate_sender, rate_limit_max_messages=1)
+    rate_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("um", message_id="PRESENCE-SILENCE-1"),
+    )
+    rate_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("dois", message_id="PRESENCE-SILENCE-2"),
+    )
+    rate_sender.presence.clear()
+    rate_sender.events.clear()
+    rate_client.post(
+        WEBHOOK,
+        json=make_webhook_payload("tres", message_id="PRESENCE-SILENCE-3"),
+    )
+    assert rate_sender.presence == []
+    assert rate_sender.events == []
 
 
 def test_non_text_dm_gets_text_only_reply_without_llm(sender: FakeSender) -> None:
@@ -1377,6 +1711,22 @@ def test_voltar_targeting_non_paused_conversation_gets_honest_notice(
 
     assert response.status_code == 200
     assert sender.sent == [(ADMIN, f"Nenhuma pausa ativa para {USER}.")]
+
+
+def test_control_command_confirmation_has_no_presence(sender: FakeSender) -> None:
+    client = make_test_client(sender, admin_contact=ADMIN)
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            f"voltar {USER}",
+            message_id="VOLTAR-NO-PRESENCE",
+            chat=ADMIN_CHAT,
+        ),
+    )
+
+    assert sender.sent == [(ADMIN, f"Nenhuma pausa ativa para {USER}.")]
+    assert sender.presence == []
 
 
 def test_voltar_number_matching_tolerates_formatting(sender: FakeSender) -> None:

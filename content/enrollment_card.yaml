@@ -15,12 +15,12 @@ course_name: "Inteligências Artificiais Generativas Aplicada a Programação �
 unit: "SENAI Jandira"
 modality: "Presencial"
 enrollment_url: "https://www.sp.senai.br/inscricaobolsapresencial/inteligencias-artificiais-generativas-aplicada-a-programacao-chatgpt/101299/127/1106449"
+senai_course_listing_url: "https://www.sp.senai.br/cursos/cursos-livres/tecnologia-da-informacao-e-informatica?unidade=127"
 
 # --- Turma atual ---
 class_start: "25/07/2026"
 class_end: "29/08/2026"
 schedule: "Aos sábados, das 08:00 às 17:00"
-seats: "19 vagas"
 price: >-
   Turma com vagas de bolsa (gratuitas). A reserva é feita online pelo link de
   inscrição e a matrícula é confirmada presencialmente na escola.

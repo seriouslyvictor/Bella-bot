@@ -50,10 +50,10 @@ Logs, screenshots, message IDs, reproduction steps, or other useful context.
 ### Keep the course opening count up to date
 
 - Reported at: 2026-07-16T22:38:33-03:00
-- Status: needs-info
+- Status: ready-for-agent
 - Verified at: 2026-07-16T22:38:33-03:00
 - Verified by: human: user
-- Tracking issue: not created
+- Tracking issue: .scratch/bella-polish/spec.md
 
 **Observed:**
 
@@ -94,10 +94,10 @@ from the class details reached through that action.
 ### Show online presence and typing indication before replies
 
 - Reported at: 2026-07-16T22:32:15-03:00
-- Status: needs-triage
+- Status: ready-for-agent
 - Verified at: 2026-07-16T22:32:15-03:00
 - Verified by: human: user
-- Tracking issue: not created
+- Tracking issue: .scratch/bella-polish/spec.md
 
 **Observed:**
 
@@ -117,10 +117,10 @@ Reported and verified by the user during a live conversation with Bella.
 ### Define handling for message reactions
 
 - Reported at: 2026-07-16T22:26:16-03:00
-- Status: needs-info
+- Status: ready-for-agent
 - Verified at: 2026-07-16T22:26:16-03:00
 - Verified by: human: user
-- Tracking issue: not created
+- Tracking issue: .scratch/bella-polish/spec.md
 
 **Observed:**
 

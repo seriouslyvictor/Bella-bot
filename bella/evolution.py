@@ -10,11 +10,13 @@ import base64
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
 logger = logging.getLogger("bella")
+
+PresenceState = Literal["available", "composing", "paused"]
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,9 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
         return None
 
     wire_message = data.get("Message")
+    if isinstance(wire_message, dict) and "reactionMessage" in wire_message:
+        logger.info("reaction event dropped: %s", message_id)
+        return None
     text = _extract_text(wire_message)
 
     return InboundMessage(
@@ -163,6 +168,8 @@ class WhatsAppSender(Protocol):
 
     async def send_document(self, number: str, path: Path, caption: str) -> str: ...
 
+    async def send_presence(self, number: str, state: PresenceState) -> None: ...
+
     async def check_health(self) -> None: ...
 
 
@@ -206,6 +213,19 @@ class EvolutionSender:
         )
         response.raise_for_status()
         return _extract_message_id(response.json())
+
+    async def send_presence(self, number: str, state: PresenceState) -> None:
+        response = await self._client.post(
+            f"{self._base_url}/message/presence",
+            headers=self._headers,
+            json={
+                "number": number,
+                "state": state,
+                "isAudio": False,
+                "delay": 0,
+            },
+        )
+        response.raise_for_status()
 
     async def check_health(self) -> None:
         # /server/ok reflects process availability without requiring an active
