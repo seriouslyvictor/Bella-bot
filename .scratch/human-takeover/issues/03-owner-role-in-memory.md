@@ -21,8 +21,8 @@ own.
 
 **Status:** ready-for-agent
 
-- [ ] An owner text message during a takeover is stored under the `owner` role in that conversation's history
-- [ ] After resume, the fake answerer's captured history contains the owner message, framed as the human owner's words and distinguishable from assistant turns
-- [ ] The Postgres role constraint accepts `owner`, and applying the schema to a database created by the previous version succeeds (Postgres-marked test)
-- [ ] Owner media messages store nothing (pause re-arm only)
-- [ ] Verified through the webhook seam and the fake answerer's histories — no storage-internal assertions
+- [x] An owner text message during a takeover is stored under the `owner` role in that conversation's history
+- [x] After resume, the fake answerer's captured history contains the owner message, framed as the human owner's words and distinguishable from assistant turns
+- [x] The Postgres role constraint accepts `owner`, and applying the schema to a database created by the previous version succeeds (Postgres-marked test)
+- [x] Owner media messages store nothing (pause re-arm only)
+- [x] Verified through the webhook seam and the fake answerer's histories — no storage-internal assertions

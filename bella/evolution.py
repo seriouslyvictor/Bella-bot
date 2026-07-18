@@ -22,6 +22,7 @@ class InboundMessage:
     message_id: str
     chat_jid: str
     text: str | None
+    media_caption: str | None
     push_name: str
     is_from_me: bool
     is_group: bool
@@ -83,12 +84,14 @@ def parse_webhook(payload: Any) -> InboundMessage | None:
     if not isinstance(message_id, str) or chat_jid is None:
         return None
 
-    text = _extract_text(data.get("Message"))
+    wire_message = data.get("Message")
+    text = _extract_text(wire_message)
 
     return InboundMessage(
         message_id=message_id,
         chat_jid=chat_jid,
         text=text,
+        media_caption=_extract_media_caption(wire_message),
         push_name=str(info.get("PushName", "")),
         is_from_me=bool(info.get("IsFromMe", False)),
         is_group=bool(info.get("IsGroup", False)) or chat_jid.endswith("@g.us"),
@@ -108,6 +111,27 @@ def _extract_text(message: Any) -> str | None:
     if not isinstance(text, str) or not text.strip():
         return None
     return text
+
+
+def _extract_media_caption(message: Any) -> str | None:
+    """Extract a media caption without promoting media into a text message.
+
+    Media still follows Bella's non-text behavior, but its caption identifies
+    an outbound document echo during the pre-response race and preserves useful
+    context when a user sends media during a Takeover Pause.
+    """
+    if not isinstance(message, dict):
+        return None
+    for key in ("documentMessage", "imageMessage", "videoMessage"):
+        media = message.get(key)
+        caption = media.get("caption") if isinstance(media, dict) else None
+        if isinstance(caption, str) and caption.strip():
+            return caption
+    wrapper = message.get("documentWithCaptionMessage")
+    nested = wrapper.get("message") if isinstance(wrapper, dict) else None
+    if isinstance(nested, dict):
+        return _extract_media_caption(nested)
+    return None
 
 
 def _read_base64(path: Path) -> str:

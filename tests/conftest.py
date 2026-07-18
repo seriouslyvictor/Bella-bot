@@ -178,6 +178,7 @@ def make_webhook_payload(
     sender_alt: str = "",
     recipient_alt: str = "",
     message_type: str = "text",
+    media_caption: str | None = None,
 ) -> dict[str, Any]:
     """Simulates an Evolution GO 'Message' webhook delivery.
 
@@ -189,6 +190,8 @@ def make_webhook_payload(
     message: dict[str, Any] = {}
     if text is not None:
         message["conversation"] = text
+    elif media_caption is not None:
+        message[f"{message_type}Message"] = {"caption": media_caption}
     return {
         "event": "Message",
         "data": {

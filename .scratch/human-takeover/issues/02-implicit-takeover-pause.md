@@ -35,13 +35,13 @@ human from-me message only affects pause state; nothing is stored for it yet.
 
 **Status:** ready-for-agent
 
-- [ ] A foreign from-me text message in a user chat pauses that conversation: subsequent user messages get stored but receive no send of any kind
-- [ ] A foreign from-me media message also pauses/re-arms
-- [ ] Bella's own echo (matching ledger ID, or matching recipient+text when the echo beats the send response) does not pause
-- [ ] Each human message resets the window; a user message arriving after the injected clock passes expiry gets a normal reply, and unanswered pause-era messages are never answered (forward-only)
-- [ ] No announcement is sent on pause or resume
-- [ ] Pause duration is a config knob defaulting to 1 hour
-- [ ] Pause state survives a service restart (persisted in both store implementations; Postgres-marked tests cover the real store)
-- [ ] Duplicate webhook deliveries are still deduplicated during a pause
-- [ ] Group-chat from-me messages remain ignored
-- [ ] All behavior verified through the webhook seam: posted payloads in, fake-sender outbox out
+- [x] A foreign from-me text message in a user chat pauses that conversation: subsequent user messages get stored but receive no send of any kind
+- [x] A foreign from-me media message also pauses/re-arms
+- [x] Bella's own echo (matching ledger ID, or matching recipient+text when the echo beats the send response) does not pause
+- [x] Each human message resets the window; a user message arriving after the injected clock passes expiry gets a normal reply, and unanswered pause-era messages are never answered (forward-only)
+- [x] No announcement is sent on pause or resume
+- [x] Pause duration is a config knob defaulting to 1 hour
+- [x] Pause state survives a service restart (persisted in both store implementations; Postgres-marked tests cover the real store)
+- [x] Duplicate webhook deliveries are still deduplicated during a pause
+- [x] Group-chat from-me messages remain ignored
+- [x] All behavior verified through the webhook seam: posted payloads in, fake-sender outbox out

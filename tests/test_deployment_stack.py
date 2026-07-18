@@ -137,6 +137,9 @@ def test_remaining_feature_configuration_is_exposed_to_bella() -> None:
     assert environment["RATE_LIMIT_WINDOW_SECONDS"] == (
         "${RATE_LIMIT_WINDOW_SECONDS:-60}"
     )
+    assert environment["TAKEOVER_PAUSE_SECONDS"] == (
+        "${TAKEOVER_PAUSE_SECONDS:-3600}"
+    )
     assert "./content:/app/content:ro" in bella["volumes"]
 
 

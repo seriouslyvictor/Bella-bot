@@ -25,10 +25,10 @@ prompt-injected.
 
 **Status:** ready-for-agent
 
-- [ ] `voltar <número>` from the admin number clears the pause; the next user message in that chat gets a normal bot reply
-- [ ] The admin receives a confirmation reply; the user receives nothing at resume time
-- [ ] `voltar` targeting a non-paused conversation replies to the admin with a not-paused notice
-- [ ] Number matching tolerates formatting differences (punctuation, country-code spacing) against the stored conversation key
-- [ ] Command messages never reach the Scope Gate or answerer (fake gate/answerer record no calls)
-- [ ] Non-command admin messages flow through the normal pipeline
-- [ ] Verified through the webhook seam: admin-number payloads in, fake-sender outbox out
+- [x] `voltar <número>` from the admin number clears the pause; the next user message in that chat gets a normal bot reply
+- [x] The admin receives a confirmation reply; the user receives nothing at resume time
+- [x] `voltar` targeting a non-paused conversation replies to the admin with a not-paused notice
+- [x] Number matching tolerates formatting differences (punctuation, country-code spacing) against the stored conversation key
+- [x] Command messages never reach the Scope Gate or answerer (fake gate/answerer record no calls)
+- [x] Non-command admin messages flow through the normal pipeline
+- [x] Verified through the webhook seam: admin-number payloads in, fake-sender outbox out

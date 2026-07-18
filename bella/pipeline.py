@@ -234,14 +234,15 @@ class Pipeline:
             return
         if await self._pause_active(message.number):
             # The human owns this conversation's reply obligation (ADR 0003):
-            # store text for context, but no Scope Gate, no LLM, no canned
+            # store the message for context, but no Scope Gate, no LLM, no canned
             # reply, no rate-limit notice. Checked before the rate limiter so
             # a pause-era message never feeds its accounting.
-            if message.text is not None:
-                await self._conversation_store.append_message(
-                    message.number,
-                    ConversationMessage("user", message.text, datetime.now(UTC)),
-                )
+            await self._conversation_store.append_message(
+                message.number,
+                ConversationMessage(
+                    "user", self._memory_text(message), datetime.now(UTC)
+                ),
+            )
             logger.info(
                 "takeover pause active, no reply sent: %s", message.message_id
             )
@@ -306,7 +307,9 @@ class Pipeline:
         Media messages (text is None) only re-arm the pause.
         """
         if self._echo_ledger.is_own_echo(
-            message.message_id, message.number, message.text
+            message.message_id,
+            message.number,
+            message.text or message.media_caption,
         ):
             return
         until = self._clock() + self._takeover_pause_window
@@ -336,7 +339,7 @@ class Pipeline:
         """
         if message.text is None:
             return False
-        command = parse_command(message.text)
+        command = parse_command(message.text, message.number)
         if command is None:
             return False
         if await self._pause_active(command.target_number):
@@ -344,7 +347,7 @@ class Pipeline:
             reply = resumed_reply(command.target_number)
         else:
             reply = not_paused_reply(command.target_number)
-        await self._send_text(message.number, reply)
+        await self._send_text(command.reply_target, reply)
         logger.info(
             "control channel voltar handled for %s (message %s)",
             command.target_number,
@@ -355,6 +358,16 @@ class Pipeline:
     async def _pause_active(self, phone_number: str) -> bool:
         until = await self._conversation_store.paused_until(phone_number)
         return until is not None and until > self._clock()
+
+    @staticmethod
+    def _memory_text(message: InboundMessage) -> str:
+        if message.text is not None:
+            return message.text
+        media_type = message.message_type.strip() or "desconhecida"
+        marker = f"[Mídia recebida: {media_type}]"
+        if message.media_caption is not None:
+            return f"{marker} {message.media_caption}"
+        return marker
 
     async def _send_text(self, number: str, text: str) -> None:
         """Every send to a user chat is registered before the call so a
@@ -370,10 +383,8 @@ class Pipeline:
             self._echo_ledger.record_id(key, message_id)
 
     async def _send_document(self, number: str, path: Path, caption: str) -> None:
-        """A document echo carries no text, so it can only match by provider
-        id: a document echo that beats the send response (including one
-        whose id extraction failed) mis-pauses that conversation for one
-        window, within ADR 0003's accepted bounded-failure envelope."""
+        """Register the caption before sending so an early document echo can
+        match even before its provider ID is known (ADR 0003, consequence 1)."""
         key = self._echo_ledger.register(number, caption)
         try:
             message_id = await self._sender.send_document(number, path, caption)

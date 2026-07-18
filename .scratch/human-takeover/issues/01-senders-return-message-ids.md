@@ -12,7 +12,7 @@ instead of a tangled one ("make the change easy, then make the easy change").
 
 **Status:** ready-for-agent
 
-- [ ] Send operations on the sender contract return the provider message ID
-- [ ] The Evolution sender reads the ID from the actual send response shape (verify against the running instance's documented/observed payload; the normalization point for wire shapes is the single place adjusted)
-- [ ] The fake sender returns deterministic, unique IDs so later tests can replay echoes
-- [ ] No behavior change: every existing test passes without modification beyond the fake's signature
+- [x] Send operations on the sender contract return the provider message ID
+- [x] The Evolution sender reads the ID from the actual send response shape (verify against the running instance's documented/observed payload; the normalization point for wire shapes is the single place adjusted)
+- [x] The fake sender returns deterministic, unique IDs so later tests can replay echoes
+- [x] No behavior change: every existing test passes without modification beyond the fake's signature

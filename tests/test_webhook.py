@@ -931,6 +931,43 @@ def test_own_apostila_document_echo_does_not_pause(
     assert len(sender.sent_documents) == 2
 
 
+def test_own_apostila_echo_matching_caption_does_not_pause_before_id_is_known(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    apostila = tmp_path / "apostila.pdf"
+    apostila.write_bytes(b"%PDF-1.7 test")
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APOSTILA_REQUEST),
+        apostila_path=apostila,
+    )
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("apostila?", message_id="DOCUMENT-RACE-USER-1"),
+    )
+    sent_caption = sender.sent_documents[0][2]
+
+    echo = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None,
+            message_id="DOCUMENT-ECHO-BEFORE-ID-KNOWN",
+            from_me=True,
+            message_type="document",
+            media_caption=sent_caption,
+        ),
+    )
+    assert echo.status_code == 200
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "apostila de novo", message_id="DOCUMENT-RACE-USER-2"
+        ),
+    )
+    assert len(sender.sent_documents) == 2
+
+
 def test_pause_silences_replies_stores_text_and_resumes_forward_only(
     sender: FakeSender,
 ) -> None:
@@ -985,6 +1022,42 @@ def test_pause_silences_replies_stores_text_and_resumes_forward_only(
         ("user", "oi de novo"),
     ]
     assert answerer.seen == [("oi bella", RouteCategory.COURSE_QUESTION)]
+
+
+def test_pause_stores_user_media_for_context_after_resume(sender: FakeSender) -> None:
+    now = [datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC)]
+    answerer = FakeAnswerer()
+    client = make_test_client(
+        sender,
+        answerer=answerer,
+        takeover_clock=lambda: now[0],
+    )
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "eu assumo daqui", message_id="MEDIA-MEMORY-TAKEOVER", from_me=True
+        ),
+    )
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            None, message_id="MEDIA-MEMORY-IMAGE", message_type="image"
+        ),
+    )
+    assert sender.sent == []
+
+    now[0] += timedelta(hours=1, minutes=1)
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "o que eu mandei?", message_id="MEDIA-MEMORY-AFTER"
+        ),
+    )
+
+    assert [(message.role, message.text) for message in answerer.histories[0]] == [
+        ("owner", "eu assumo daqui"),
+        ("user", "[Mídia recebida: image]"),
+    ]
 
 
 def test_default_pause_window_is_one_hour(sender: FakeSender) -> None:
