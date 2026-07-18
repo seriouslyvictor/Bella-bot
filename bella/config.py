@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bella.rate_limit import RateLimitPolicy
+from bella.seat_count import DEFAULT_MAX_AGE_SECONDS
 
 # Only the fallbacks for a source checkout — the image pins every one of these
 # explicitly (see Dockerfile), because inferring the root from __file__ silently
@@ -54,7 +55,7 @@ class Settings:
     # Sliding Takeover Pause window (ADR 0003), reset by every human message.
     takeover_pause_seconds: int = 3600
     seat_count_refresh_seconds: int = 6 * 60 * 60
-    seat_count_max_age_seconds: int = 24 * 60 * 60
+    seat_count_max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS
 
     @classmethod
     def from_env(cls) -> "Settings":

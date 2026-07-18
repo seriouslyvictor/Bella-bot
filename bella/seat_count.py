@@ -10,6 +10,11 @@ from bella.availability import AvailabilitySource
 
 logger = logging.getLogger("bella")
 
+# Single owner of the seat-count staleness default: Settings.from_env's field
+# default and CourseContent's fallback holder both derive from this constant
+# instead of each hard-coding "24 hours".
+DEFAULT_MAX_AGE_SECONDS = 24 * 60 * 60
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -72,7 +77,7 @@ class SeatCountRefresher:
             )
             return False
         self._holder.update(count)
-        logger.info("seat count refreshed: %s opening(s)", count)
+        logger.info("seat count refreshed: %s seat(s)", count)
         return True
 
     async def run(self) -> None:

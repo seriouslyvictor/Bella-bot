@@ -24,7 +24,16 @@ _ACTION_PATTERN = re.compile(
     r"(\d+)\s*,\s*(\d+)\s*,\s*'([^']+)'\s*,\s*"
     r"(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"
 )
-_AVAILABILITY_PATTERN = re.compile(r">\s*Vagas:\s*(\d+)\s*<", re.IGNORECASE)
+# Captures (seat count, turma start date) per turma card. A second,
+# simultaneously listed turma is a normal page state (the current class
+# still running while the next one opens), not an anomaly, so callers use
+# the paired start date to disambiguate rather than treating >1 match as a
+# parse failure.
+_TURMA_PATTERN = re.compile(
+    r">\s*Vagas:\s*(\d+)\s*<.*?In[ií]cio<br\s*/?>\s*<strong>\s*"
+    r"(\d{2}/\d{2}/\d{4})\s*<",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class AvailabilityError(RuntimeError):
@@ -54,9 +63,14 @@ class SenaiAvailabilitySource:
         self,
         listing_url: str,
         *,
+        class_start: str = "",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._listing_url = listing_url
+        # The Enrollment Card's current turma start date, used only to pick
+        # the right turma when the class-details page lists more than one
+        # (see _TURMA_PATTERN). Unused while exactly one turma is listed.
+        self._class_start = class_start
         self._client = client or httpx.AsyncClient(
             timeout=30,
             follow_redirects=True,
@@ -121,10 +135,18 @@ class SenaiAvailabilitySource:
             },
         )
         response.raise_for_status()
-        counts = _AVAILABILITY_PATTERN.findall(response.text)
-        if len(counts) != 1:
+        turmas = _TURMA_PATTERN.findall(response.text)
+        if not turmas:
             raise AvailabilityError("availability is unparseable")
-        return int(counts[0])
+        if len(turmas) == 1:
+            return int(turmas[0][0])
+        matches = [count for count, start in turmas if start == self._class_start]
+        if len(matches) != 1:
+            raise AvailabilityError(
+                "availability is ambiguous: multiple turmas listed, "
+                "none matched the Enrollment Card's class_start"
+            )
+        return int(matches[0])
 
     async def _get_listing_page(self, url: str) -> str:
         response = await self._client.get(url)

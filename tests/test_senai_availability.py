@@ -20,9 +20,10 @@ def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def _source(handler: Any) -> SenaiAvailabilitySource:
+def _source(handler: Any, *, class_start: str = "") -> SenaiAvailabilitySource:
     return SenaiAvailabilitySource(
         LISTING_URL,
+        class_start=class_start,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -48,6 +49,39 @@ def test_source_follows_ver_turmas_and_returns_captured_live_count() -> None:
         "programacao-chatgpt&cursoId=101299&escolaId=127&"
         "estrategia=Presencial&bolsa=0&gratuito=0&turno=0&pos=0"
     )
+
+
+def _two_turma_handler(request: httpx.Request) -> httpx.Response:
+    if request.method == "POST":
+        return httpx.Response(200, text=_fixture("class-details-two-turmas.html"))
+    if request.url.params.get("pag") == "2":
+        return httpx.Response(200, text=_fixture("course-listing-page-2.html"))
+    return httpx.Response(200, text=_fixture("course-listing-page-1.html"))
+
+
+def test_two_simultaneous_turmas_picks_the_one_matching_class_start() -> None:
+    # A next turma opening while the current one still runs is a normal page
+    # state, not an anomaly; the Enrollment Card's class_start disambiguates.
+    count = asyncio.run(
+        _source(_two_turma_handler, class_start="25/07/2026").fetch_count()
+    )
+
+    assert count == 20
+
+
+def test_two_simultaneous_turmas_with_no_class_start_match_fails_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The invariant "never a wrong number, degrade to absence" holds even
+    # when multiple turmas parse: an unmatched class_start must fail, not
+    # guess.
+    with caplog.at_level(logging.WARNING, logger="bella"):
+        with pytest.raises(AvailabilityError, match="ambiguous"):
+            asyncio.run(
+                _source(_two_turma_handler, class_start="01/01/2000").fetch_count()
+            )
+
+    assert "ambiguous" in caplog.text
 
 
 @pytest.mark.parametrize(

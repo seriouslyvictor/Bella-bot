@@ -63,7 +63,10 @@ def build_runtime(settings: Settings) -> Runtime:
         settings.rate_limit_policy,
         takeover_pause_seconds=settings.takeover_pause_seconds,
     )
-    source = SenaiAvailabilitySource(content.senai_course_listing_url)
+    source = SenaiAvailabilitySource(
+        content.senai_course_listing_url,
+        class_start=content.class_start,
+    )
     refresher = SeatCountRefresher(
         source,
         holder,

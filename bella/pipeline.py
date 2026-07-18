@@ -15,12 +15,11 @@ the human owns the reply obligation. Do not "fix" that silence.
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Lock
 from time import monotonic
 from typing import Protocol
 
@@ -190,7 +189,6 @@ class Pipeline:
         self._presence_tasks: set[asyncio.Task[None]] = set()
         self._presence_tails: dict[str, asyncio.Task[None]] = {}
         self._active_reply_counts: dict[str, int] = {}
-        self._active_reply_lock = Lock()
         self._takeover_pause_window = timedelta(seconds=takeover_pause_seconds)
         self._clock = takeover_clock
 
@@ -264,53 +262,57 @@ class Pipeline:
             return
         language = detect_reply_language(message.text)
         if rate_limit is RateLimitDecision.NOTIFY:
-            async with self._reply_presence(message.number):
-                await self._send_text(
-                    message.number,
-                    self._canned_replies.reply("rate_limit_reply", language),
-                )
+            await self._reply_with_presence(
+                message.number, self._canned_plan("rate_limit_reply", language)
+            )
             logger.info("rate-limit notice sent: %s", message.message_id)
             return
-        if message.text is None:
+        text = message.text
+        if text is None:
             logger.info(
                 "non-text message receives canned reply: %s (type=%s)",
                 message.message_id,
                 message.message_type,
             )
-            async with self._reply_presence(message.number):
-                await self._send_text(
-                    message.number,
-                    self._canned_replies.reply("media_reply", language),
-                )
+            await self._reply_with_presence(
+                message.number, self._canned_plan("media_reply", language)
+            )
             return
 
-        async with self._reply_presence(message.number):
-            history = await self._conversation_store.recent_messages(message.number)
-            await self._conversation_store.append_message(
-                message.number,
-                ConversationMessage("user", message.text, datetime.now(UTC)),
-            )
-            try:
-                plan = await self._reply_for(
-                    message.text,
-                    message.number,
-                    history,
-                    language,
-                )
-            except Exception:
-                # Guards the whole reply-producing step, not just one stage of it:
-                # every stage added here must degrade to a reply, never to silence.
-                logger.exception("reply production failed for %s", message.message_id)
-                plan = ReplyPlan(self._canned_replies.reply("error_reply", language))
-            if not plan.already_sent:
-                await self._send_text(message.number, plan.text)
+        plan = await self._reply_with_presence(
+            message.number,
+            self._produce_reply(text, message.number, language, message.message_id),
+        )
         await self._conversation_store.append_message(
             message.number,
             ConversationMessage("assistant", plan.text, datetime.now(UTC)),
         )
         if plan.needs_handoff:
-            await self._notify_admin(message.number, message.text)
+            await self._notify_admin(message.number, text)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
+
+    async def _canned_plan(self, key: str, language: ReplyLanguage) -> ReplyPlan:
+        return ReplyPlan(self._canned_replies.reply(key, language))
+
+    async def _produce_reply(
+        self,
+        text: str,
+        number: str,
+        language: ReplyLanguage,
+        message_id: str,
+    ) -> ReplyPlan:
+        history = await self._conversation_store.recent_messages(number)
+        await self._conversation_store.append_message(
+            number,
+            ConversationMessage("user", text, datetime.now(UTC)),
+        )
+        try:
+            return await self._reply_for(text, number, history, language)
+        except Exception:
+            # Guards the whole reply-producing step, not just one stage of it:
+            # every stage added here must degrade to a reply, never to silence.
+            logger.exception("reply production failed for %s", message_id)
+            return ReplyPlan(self._canned_replies.reply("error_reply", language))
 
     async def _handle_takeover_signal(self, message: InboundMessage) -> None:
         """A from-me message is either Bella's own echo or a human typing in.
@@ -353,7 +355,7 @@ class Pipeline:
         """
         if message.text is None:
             return False
-        command = parse_command(message.text, message.number)
+        command = parse_command(message.text)
         if command is None:
             return False
         if await self._pause_active(command.target_number):
@@ -361,7 +363,9 @@ class Pipeline:
             reply = resumed_reply(command.target_number)
         else:
             reply = not_paused_reply(command.target_number)
-        await self._send_text(command.reply_target, reply)
+        # The admin's own chat is the reply target: parse_command is pure
+        # text-to-command and carries no source/transport knowledge.
+        await self._send_text(message.number, reply)
         logger.info(
             "control channel voltar handled for %s (message %s)",
             command.target_number,
@@ -383,23 +387,39 @@ class Pipeline:
             return f"{marker} {message.media_caption}"
         return marker
 
+    async def _reply_with_presence(
+        self, number: str, produce: Awaitable[ReplyPlan]
+    ) -> ReplyPlan:
+        """Bracket presence (available/composing/paused) around producing and
+        sending a reply — composing must cover the seconds of reply
+        production, not just the send. The apostila path already sent its
+        own document, so an already_sent plan skips the send but still
+        clears presence. Shared by every branch that sends one text reply
+        to a user chat."""
+        async with self._reply_presence(number):
+            plan = await produce
+            if not plan.already_sent:
+                await self._send_text(number, plan.text)
+            return plan
+
     @asynccontextmanager
     async def _reply_presence(self, number: str) -> AsyncIterator[None]:
-        with self._active_reply_lock:
-            active_count = self._active_reply_counts.get(number, 0)
-            self._active_reply_counts[number] = active_count + 1
-        if active_count == 0:
-            await self._signal_presence(number, "available")
-            await self._signal_presence(number, "composing")
+        # Only touched from the asyncio event loop with no await between
+        # reading and writing the counter, so plain dict operations are
+        # race-free — no lock needed.
+        active_count = self._active_reply_counts.get(number, 0)
+        self._active_reply_counts[number] = active_count + 1
         try:
+            if active_count == 0:
+                await self._signal_presence(number, "available")
+                await self._signal_presence(number, "composing")
             yield
         finally:
-            with self._active_reply_lock:
-                remaining = self._active_reply_counts[number] - 1
-                if remaining:
-                    self._active_reply_counts[number] = remaining
-                else:
-                    self._active_reply_counts.pop(number)
+            remaining = self._active_reply_counts[number] - 1
+            if remaining:
+                self._active_reply_counts[number] = remaining
+            else:
+                self._active_reply_counts.pop(number)
             if remaining == 0:
                 await self._signal_presence(number, "paused")
 

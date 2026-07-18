@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from bella.seat_count import SeatCountHolder
+from bella.seat_count import DEFAULT_MAX_AGE_SECONDS, SeatCountHolder
 from bella.yaml_content import parse_yaml_mapping, require_text
 
 WHAT = "Enrollment Card"
@@ -19,6 +19,7 @@ class CourseContent:
     enrollment_card_fields: dict[str, Any]
     enrollment_url: str
     senai_course_listing_url: str
+    class_start: str
     human_contact_reply: str
     seat_count_holder: SeatCountHolder
 
@@ -34,7 +35,14 @@ class CourseContent:
         parsed = parse_yaml_mapping(enrollment_card, WHAT)
         enrollment_url = require_text(parsed, "enrollment_url", WHAT)
         listing_url = require_text(parsed, "senai_course_listing_url", WHAT)
+        class_start = parsed.get("class_start", "")
+        if not isinstance(class_start, str):
+            raise ValueError(f"{WHAT} class_start must be text")
         parsed.pop("seats", None)
+        # Operational-only: feeds the availability seam, never the model. Left
+        # in enrollment_card_fields it would be a second URL in the rendered
+        # Enrollment Card, but the answerer may only ever emit enrollment_url.
+        parsed.pop("senai_course_listing_url", None)
         contact_lines = [require_text(parsed, "human_contact", WHAT)]
         for key, label in (
             ("human_contact_phone", "Telefone/WhatsApp"),
@@ -51,16 +59,17 @@ class CourseContent:
             enrollment_card_fields=parsed,
             enrollment_url=enrollment_url,
             senai_course_listing_url=listing_url,
+            class_start=class_start,
             human_contact_reply="\n".join(contact_lines),
             seat_count_holder=seat_count_holder
-            or SeatCountHolder(max_age=timedelta(hours=24)),
+            or SeatCountHolder(max_age=timedelta(seconds=DEFAULT_MAX_AGE_SECONDS)),
         )
 
     def render_enrollment_card(self) -> str:
         fields = dict(self.enrollment_card_fields)
         count = self.seat_count_holder.current_count()
         if count is not None:
-            fields["seats"] = f"{count} vagas"
+            fields["seats"] = f"{count} vaga" if count == 1 else f"{count} vagas"
         return yaml.safe_dump(
             fields,
             allow_unicode=True,

@@ -1,28 +1,28 @@
-"""Print the current official SENAI-SP opening count."""
+"""Print the current official SENAI-SP seat count."""
 
 import asyncio
 import os
 from pathlib import Path
 
 from bella.availability import SenaiAvailabilitySource
-from bella.config import DEFAULT_ENROLLMENT_CARD_PATH
-from bella.yaml_content import parse_yaml_mapping, require_text
+from bella.config import DEFAULT_ENROLLMENT_CARD_PATH, DEFAULT_KNOWLEDGE_BASE_PATH
+from bella.course_content import CourseContent
 
 
 async def _run() -> int:
-    card_path = Path(
+    knowledge_base_path = Path(
+        os.environ.get("KNOWLEDGE_BASE_PATH", DEFAULT_KNOWLEDGE_BASE_PATH)
+    )
+    enrollment_card_path = Path(
         os.environ.get("ENROLLMENT_CARD_PATH", DEFAULT_ENROLLMENT_CARD_PATH)
     )
-    card = parse_yaml_mapping(
-        card_path.read_text(encoding="utf-8"),
-        "Enrollment Card",
+    # Reuses CourseContent's own loading path rather than re-parsing the
+    # Enrollment Card here, so there is one owner of that format.
+    content = CourseContent.from_files(knowledge_base_path, enrollment_card_path)
+    source = SenaiAvailabilitySource(
+        content.senai_course_listing_url,
+        class_start=content.class_start,
     )
-    listing_url = require_text(
-        card,
-        "senai_course_listing_url",
-        "Enrollment Card",
-    )
-    source = SenaiAvailabilitySource(listing_url)
     try:
         count = await source.fetch_count()
     finally:

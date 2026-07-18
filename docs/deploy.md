@@ -93,7 +93,7 @@ replacing that host file changes the next apostila request without rebuilding
 the image. `RATE_LIMIT_MAX_MESSAGES` and `RATE_LIMIT_WINDOW_SECONDS` configure
 the per-number sliding window, and the canned cap/media texts remain editable
 in `content/canned_replies.yaml`. `SEAT_COUNT_REFRESH_SECONDS` controls how
-often Bella refreshes the official SENAI-SP opening count (default: 21600,
+often Bella refreshes the official SENAI-SP seat count (default: 21600,
 six hours), while `SEAT_COUNT_MAX_AGE_SECONDS` controls when the last good
 count is omitted as stale (default: 86400, 24 hours).
 
@@ -104,9 +104,13 @@ from the scheduled job:
 docker compose exec bella python -m bella.scripts.check_seat_count
 ```
 
-The command prints the current official opening count. A request or
+The command prints the current official seat count. A request or
 page-structure failure exits unsuccessfully instead of producing a fallback
 number.
+
+The best-effort per-chat "available" presence call has not been verified
+against a live instance yet; confirm its wire shape against the live
+Evolution GO instance on the next redeploy.
 
 When migrating the repository's previous `.env`, keep the existing
 `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_ID`, `ANTHROPIC_API_KEY`, and display

@@ -23,9 +23,7 @@ from bella.control_channel import VoltarCommand, parse_command
     ],
 )
 def test_parses_formatted_numbers_to_digits_only(text: str) -> None:
-    assert parse_command(text, "5511888888888") == VoltarCommand(
-        "5511999999999", "5511888888888"
-    )
+    assert parse_command(text) == VoltarCommand("5511999999999")
 
 
 @pytest.mark.parametrize(
@@ -41,4 +39,4 @@ def test_parses_formatted_numbers_to_digits_only(text: str) -> None:
     ],
 )
 def test_unrecognized_text_returns_none(text: str) -> None:
-    assert parse_command(text, "5511888888888") is None
+    assert parse_command(text) is None

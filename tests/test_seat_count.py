@@ -83,6 +83,29 @@ def test_fresh_live_count_is_rendered_per_answer(tmp_path: Path) -> None:
     assert "seats: 20 vagas" in after
 
 
+def test_single_seat_uses_singular_wording(tmp_path: Path) -> None:
+    holder = SeatCountHolder(max_age=timedelta(hours=24))
+    content = _content_with_holder(tmp_path, holder)
+
+    holder.update(1)
+
+    assert "seats: 1 vaga\n" in content.render_enrollment_card()
+
+
+def test_rendered_enrollment_card_excludes_the_listing_url(tmp_path: Path) -> None:
+    # The answerer may only ever emit enrollment_url (see PERSONA_AND_RULES);
+    # senai_course_listing_url is operational-only and must never reach the
+    # model's context as a second URL.
+    holder = SeatCountHolder(max_age=timedelta(hours=24))
+    content = _content_with_holder(tmp_path, holder)
+
+    rendered = content.render_enrollment_card()
+
+    assert content.senai_course_listing_url not in rendered
+    assert "senai_course_listing_url" not in rendered
+    assert content.enrollment_url in rendered
+
+
 def test_empty_or_stale_count_is_absent_from_enrollment_card(
     tmp_path: Path,
 ) -> None:

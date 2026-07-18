@@ -3,9 +3,8 @@
 Source-agnostic: this module knows nothing about Evolution, webhooks, or the
 admin contact number. It only turns command text into a parsed command, so a
 second Control Channel source (the self-chat, out of scope for this ticket)
-can reuse `parse_command` unchanged. The caller decides where the command
-came from and supplies the reply target; the parsed command carries that
-target without knowing which source or transport produced it.
+can reuse `parse_command` unchanged. Pure text-to-command: the caller decides
+where the command came from and where the reply goes.
 
 Commands are matched by a plain regex, never routed through an LLM (spec
 story 11) — takeover control cannot be misclassified or prompt-injected.
@@ -20,11 +19,10 @@ _VOLTAR_PATTERN = re.compile(r"^voltar\s+(.+)$", re.IGNORECASE)
 @dataclass(frozen=True)
 class VoltarCommand:
     target_number: str  # digits-only, matches a ConversationStore key
-    reply_target: str
 
 
-def parse_command(text: str, reply_target: str) -> VoltarCommand | None:
-    """Parse one line of command text and retain its source's reply target.
+def parse_command(text: str) -> VoltarCommand | None:
+    """Parse one line of command text.
 
     Number matching is digits-only and tolerant of formatting (punctuation,
     spaces, country-code spacing) so the owner can paste straight from a
@@ -42,7 +40,7 @@ def parse_command(text: str, reply_target: str) -> VoltarCommand | None:
     )
     if not target_number:
         return None
-    return VoltarCommand(target_number, reply_target)
+    return VoltarCommand(target_number)
 
 
 def resumed_reply(target_number: str) -> str:
