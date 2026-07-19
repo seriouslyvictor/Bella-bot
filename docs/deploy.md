@@ -14,7 +14,7 @@ volumes, dependencies, health checks, or internal URLs used on the VPS.
 |---|---|---|---|
 | `bella` | Built from this repo with a digest-pinned Python base and `requirements.lock` | `http://bella:8000` | `bella` database in `postgres_data` |
 | `evolution-go` | Built as `bella/evolution-go:0.7.2-pr117-0328955` from pinned Evolution GO 0.7.2 source plus the three reviewed PR #117 patches | `http://evolution-go:8080` | `evogo_auth` and `evogo_users` in `postgres_data` |
-| `postgres` | `postgres:15-alpine`, also pinned by manifest digest | `postgres:5432` | `postgres_data` |
+| `postgres` | Built as `bella/postgres:15-alpine-init1`: the digest-pinned `postgres:15-alpine` base with the database initializer baked in | `postgres:5432` | `postgres_data` |
 
 The default bridge network is project-scoped and created by Compose. Postgres
 has no production port binding. Coolify may route an HTTPS domain to
@@ -22,7 +22,13 @@ has no production port binding. Coolify may route an HTTPS domain to
 internal-only because Evolution posts its webhooks directly to
 `http://bella:8000`.
 
-On a new Postgres volume, `deploy/postgres/init-databases.sh` creates isolated
+The stack references no repository host paths at runtime: Coolify starts
+containers from a build-container checkout the host daemon cannot see, so the
+initializer ships inside the Postgres image and Bella's content ships inside
+Bella's image rather than as a `configs:` file or bind mount.
+
+On a new Postgres volume, `deploy/postgres/init-databases.sh` (baked into the
+image at `/docker-entrypoint-initdb.d/10-init-databases.sh`) creates isolated
 `bella` and `evolution` login roles and the three databases they own. Bella
 cannot connect to Evolution's databases, and Evolution cannot connect to
 Bella's. This replaces the old manual `provision_database` operator script.
@@ -87,10 +93,10 @@ The Compose file owns `EVOLUTION_URL`, `BELLA_INTERNAL_URL`, and
 `BELLA_DATABASE_URL`. Do not recreate those in Coolify: their service names
 must remain identical locally and on the VPS.
 
-Bella reads editable assets from the read-only `./content:/app/content` bind
-mount. `APOSTILA_PATH` defaults to `/app/content/apostila.pdf`; adding or
-replacing that host file changes the next apostila request without rebuilding
-the image. `RATE_LIMIT_MAX_MESSAGES` and `RATE_LIMIT_WINDOW_SECONDS` configure
+Bella's editable assets (`content/`) are baked into its image. `APOSTILA_PATH`
+defaults to `/app/content/apostila.pdf`; replacing the PDF or any YAML asset
+means committing the new file and redeploying so Coolify rebuilds the image.
+`RATE_LIMIT_MAX_MESSAGES` and `RATE_LIMIT_WINDOW_SECONDS` configure
 the per-number sliding window, and the canned cap/media texts remain editable
 in `content/canned_replies.yaml`. `SEAT_COUNT_REFRESH_SECONDS` controls how
 often Bella refreshes the official SENAI-SP seat count (default: 21600,

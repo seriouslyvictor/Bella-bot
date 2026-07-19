@@ -30,17 +30,29 @@ def test_production_compose_owns_the_three_service_stack_without_host_ports() ->
 
     assert set(services) == {"bella", "evolution-go", "postgres"}
     assert services["evolution-go"]["image"] == EVOLUTION_IMAGE
-    assert services["postgres"]["image"] == (
-        "postgres:15-alpine@"
-        "sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f"
-    )
+    assert services["postgres"]["image"] == "bella/postgres:15-alpine-init1"
+    assert services["postgres"]["build"] == {
+        "context": "deploy/postgres",
+        "dockerfile": "Dockerfile",
+    }
     assert all("ports" not in service for service in services.values())
     assert "/ready" in services["bella"]["healthcheck"]["test"][-1]
     assert "networks" not in compose
     assert set(compose["volumes"]) == {"postgres_data"}
-    assert compose["configs"]["postgres_init"]["file"] == (
-        "./deploy/postgres/init-databases.sh"
-    )
+
+
+def test_production_compose_references_no_repository_host_paths() -> None:
+    # Coolify deploys from a build-container checkout the host daemon cannot
+    # see, so `configs:` files and repository bind mounts fail at `up` time.
+    compose = _load_compose("docker-compose.yml")
+    services = compose["services"]
+
+    assert "configs" not in compose
+    assert all("configs" not in service for service in services.values())
+    assert "volumes" not in services["bella"]
+    assert services["postgres"]["volumes"] == [
+        "postgres_data:/var/lib/postgresql/data"
+    ]
 
 
 def test_application_database_roles_are_isolated_by_compose_contract() -> None:
@@ -146,7 +158,6 @@ def test_remaining_feature_configuration_is_exposed_to_bella() -> None:
     assert environment["SEAT_COUNT_MAX_AGE_SECONDS"] == (
         "${SEAT_COUNT_MAX_AGE_SECONDS:-86400}"
     )
-    assert "./content:/app/content:ro" in bella["volumes"]
 
 
 def test_local_overlay_only_publishes_loopback_ports() -> None:
@@ -154,6 +165,20 @@ def test_local_overlay_only_publishes_loopback_ports() -> None:
 
     for service in services.values():
         assert all(binding.startswith("127.0.0.1:") for binding in service["ports"])
+
+
+def test_postgres_image_bakes_the_initializer_onto_the_pinned_base() -> None:
+    dockerfile = (ROOT / "deploy/postgres/Dockerfile").read_text(encoding="utf-8")
+
+    assert (
+        "FROM postgres:15-alpine@"
+        "sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f"
+        in dockerfile
+    )
+    assert (
+        "COPY init-databases.sh /docker-entrypoint-initdb.d/10-init-databases.sh"
+        in dockerfile
+    )
 
 
 def test_postgres_initializer_is_lf_only_and_creates_all_isolated_databases() -> None:

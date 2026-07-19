@@ -1,9 +1,16 @@
 # Production stack consumed directly by Coolify. It deliberately publishes no
 # host ports: Coolify may route a domain to evolution-go:8080, while Bella and
-# PostgreSQL stay reachable only by their Compose service names.
+# PostgreSQL stay reachable only by their Compose service names. Every service
+# is self-contained: Coolify deploys from a build-container checkout the host
+# daemon cannot see, so no config or bind mount may reference repository files.
 services:
   postgres:
-    image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
+    # postgres:15-alpine (digest-pinned in deploy/postgres/Dockerfile) plus the
+    # baked-in database initializer.
+    image: bella/postgres:15-alpine-init1
+    build:
+      context: deploy/postgres
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -15,9 +22,6 @@ services:
       EVOLUTION_DB_IDLE_SESSION_TIMEOUT: ${EVOLUTION_DB_IDLE_SESSION_TIMEOUT:-5min}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    configs:
-      - source: postgres_init
-        target: /docker-entrypoint-initdb.d/10-init-databases.sh
     healthcheck:
       test:
         - CMD-SHELL
@@ -100,9 +104,6 @@ services:
       TAKEOVER_PAUSE_SECONDS: ${TAKEOVER_PAUSE_SECONDS:-3600}
       SEAT_COUNT_REFRESH_SECONDS: ${SEAT_COUNT_REFRESH_SECONDS:-21600}
       SEAT_COUNT_MAX_AGE_SECONDS: ${SEAT_COUNT_MAX_AGE_SECONDS:-86400}
-    volumes:
-      # A bind mount makes a later PDF drop visible without rebuilding Bella.
-      - ./content:/app/content:ro
     expose:
       - "8000"
     depends_on:
@@ -120,7 +121,3 @@ services:
 
 volumes:
   postgres_data:
-
-configs:
-  postgres_init:
-    file: ./deploy/postgres/init-databases.sh
