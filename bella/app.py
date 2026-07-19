@@ -71,13 +71,14 @@ def create_app(
             ) from error
         return {"status": "ready"}
 
-    @app.get("/assets/whatsapp-profile-picture.png")
+    @app.get("/assets/whatsapp-profile-picture.jpg")
     async def profile_picture() -> FileResponse:
         # Evolution GO's set-profile-picture call fetches this URL with a
         # plain HTTP GET (no header or JSON-body support), so it cannot carry
         # webhook credentials. Safe to leave open: internal-network-only, and
         # the only thing served is this one non-sensitive marketing asset.
-        return FileResponse(settings.profile_picture_path, media_type="image/png")
+        # JPEG because WhatsApp rejects PNG profile pictures.
+        return FileResponse(settings.profile_picture_path, media_type="image/jpeg")
 
     @app.post("/webhook")
     async def webhook(request: Request, background: BackgroundTasks) -> dict[str, str]:

@@ -13,7 +13,9 @@ from bella.seat_count import DEFAULT_MAX_AGE_SECONDS
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONTENT_DIR = _REPO_ROOT / "content"
 
-DEFAULT_PROFILE_PICTURE_PATH = _CONTENT_DIR / "whatsapp_profile_picture.png"
+# WhatsApp only accepts JPEG profile pictures (whatsmeow rejects PNG uploads
+# with a server error), so the asset is a square 640x640 JPEG.
+DEFAULT_PROFILE_PICTURE_PATH = _CONTENT_DIR / "whatsapp_profile_picture.jpg"
 DEFAULT_CANNED_REPLIES_PATH = _CONTENT_DIR / "canned_replies.yaml"
 DEFAULT_KNOWLEDGE_BASE_PATH = _CONTENT_DIR / "knowledge_base.md"
 DEFAULT_ENROLLMENT_CARD_PATH = _CONTENT_DIR / "enrollment_card.yaml"

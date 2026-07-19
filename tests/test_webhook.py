@@ -1131,10 +1131,10 @@ def test_profile_picture_asset_is_served(client: TestClient) -> None:
     # Evolution GO's set-profile-picture call fetches this over plain HTTP
     # with no auth (see bella/scripts/set_presentation.py) — unauthenticated
     # is the point, not an oversight.
-    response = client.get("/assets/whatsapp-profile-picture.png")
+    response = client.get("/assets/whatsapp-profile-picture.jpg")
 
     assert response.status_code == 200
-    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-type"] == "image/jpeg"
 
 
 # --- Implicit Takeover Pause (ADR 0003) ------------------------------------

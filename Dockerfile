@@ -19,7 +19,7 @@ COPY --chown=1000:1000 bella ./bella
 COPY --chown=1000:1000 content ./content
 
 # Pin asset locations; these must match COPY destinations.
-ENV PROFILE_PICTURE_PATH=/app/content/whatsapp_profile_picture.png
+ENV PROFILE_PICTURE_PATH=/app/content/whatsapp_profile_picture.jpg
 ENV CANNED_REPLIES_PATH=/app/content/canned_replies.yaml
 ENV KNOWLEDGE_BASE_PATH=/app/content/knowledge_base.md
 ENV ENROLLMENT_CARD_PATH=/app/content/enrollment_card.yaml

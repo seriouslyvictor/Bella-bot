@@ -98,7 +98,7 @@ def test_set_presentation_sets_picture_then_name(monkeypatch: pytest.MonkeyPatch
     assert len(recorder.calls) == 2
     _, picture_path, picture_body = recorder.calls[0]
     assert picture_path == "/user/profilePicture"
-    assert picture_body == {"image": "http://bella:8000/assets/whatsapp-profile-picture.png"}
+    assert picture_body == {"image": "http://bella:8000/assets/whatsapp-profile-picture.jpg"}
 
     _, name_path, name_body = recorder.calls[1]
     assert name_path == "/user/profileName"
