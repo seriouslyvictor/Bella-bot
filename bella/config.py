@@ -44,6 +44,18 @@ def _int_from_env(var: str, default: int) -> int:
     return int(os.environ.get(var, default))
 
 
+def _urls_from_env(var: str) -> tuple[str, ...]:
+    """Comma-separated allowlist for URLs a generated reply may contain.
+
+    Empty means the strictest reading of ADR-0002: a model-authored reply may
+    name no URL at all. Deployments that legitimately hand out a link (the
+    app's address, a docs page) list it here instead of having it silently
+    deleted from every answer.
+    """
+    raw = os.environ.get(var, "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     # Evolution GO's service URL on the unified Compose network.
@@ -61,6 +73,10 @@ class Settings:
     database_url: str = ""
     admin_contact: str = ""
     bella_display_name: str = "Nova"
+    # What a user is given when they ask for a person. Empty means nobody is
+    # published; the handoff still notifies the admin contact.
+    human_contact_reply: str = ""
+    allowed_reply_urls: tuple[str, ...] = ()
     profile_picture_path: Path = DEFAULT_PROFILE_PICTURE_PATH
     canned_replies_path: Path = DEFAULT_CANNED_REPLIES_PATH
     knowledge_base_path: Path = DEFAULT_KNOWLEDGE_BASE_PATH
@@ -95,6 +111,8 @@ class Settings:
             database_url=os.environ["BELLA_DATABASE_URL"],
             admin_contact=os.environ["ADMIN_CONTACT"],
             bella_display_name=os.environ.get("BELLA_DISPLAY_NAME", "Nova"),
+            human_contact_reply=os.environ.get("HUMAN_CONTACT_REPLY", ""),
+            allowed_reply_urls=_urls_from_env("ALLOWED_REPLY_URLS"),
             profile_picture_path=_path_from_env(
                 "PROFILE_PICTURE_PATH", DEFAULT_PROFILE_PICTURE_PATH
             ),

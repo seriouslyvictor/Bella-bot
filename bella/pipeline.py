@@ -6,6 +6,15 @@ dropped — see EchoLedger), never reply twice to the same delivery, always
 send the user a reply, and never let a processing error escape after the
 webhook has already been acknowledged.
 
+Every reply to a user — canned, model-authored, or feedback-dialogue —
+leaves through `_reply_with_presence`, which hands it to the ResponsePolicy
+(see `bella.response`). That is the single funnel where the URL allowlist, the
+WhatsApp formatting rules, the non-empty guarantee, and message splitting are
+applied; a user-facing branch that sends text any other way is a bug. The two
+non-user sends — the Control Channel's command acknowledgements and the
+handoff notification to the admin — are fixed operator-facing strings and go
+out as written.
+
 The always-reply invariant has exactly one sanctioned exception: a
 Takeover Pause (ADR 0003). While the course owner has typed into a
 conversation, Bella stores the user's messages but sends nothing, because
@@ -17,13 +26,13 @@ import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol
 
-from bella.answer_guard import strip_foreign_urls
+from bella.answer_guard import find_urls
 from bella.canned_replies import CannedReplies
 from bella.control_channel import not_paused_reply, parse_command, resumed_reply
 from bella.conversation_store import (
@@ -38,6 +47,12 @@ from bella.rate_limit import (
     SlidingWindowRateLimiter,
 )
 from bella.reply_language import ReplyLanguage, detect_reply_language
+from bella.response import (
+    Response,
+    ResponsePolicy,
+    ResponseSource,
+    policy_from_urls,
+)
 from bella.retention import run_retention_job
 from bella.scope_gate import RouteCategory, ScopeGate
 from bella.triage_worker import TriageWorker
@@ -147,13 +162,6 @@ class Answerer(Protocol):
     ) -> AnswerResult: ...
 
 
-@dataclass(frozen=True)
-class ReplyPlan:
-    text: str
-    already_sent: bool = False  # the apostila path sends its own document
-    needs_handoff: bool = False
-
-
 class Pipeline:
     def __init__(
         self,
@@ -173,11 +181,15 @@ class Pipeline:
         feedback_collector: FeedbackCollector | None = None,
         support_answerer: Answerer | None = None,
         triage_worker: TriageWorker | None = None,
+        response_policy: ResponsePolicy | None = None,
+        reply_timeout_seconds: float = 30.0,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
         self._answerer = answerer
         self._canned_replies = canned_replies
+        # Kept as the seed of the reply URL allowlist below; no branch reads
+        # it directly any more (the guard moved into the ResponsePolicy).
         self._enrollment_url = enrollment_url
         self._conversation_store = conversation_store
         self._apostila_path = apostila_path
@@ -185,7 +197,24 @@ class Pipeline:
         self._admin_contact = "".join(
             character for character in admin_contact if character.isdigit()
         )
-        self._refusals = RefusalRotation(canned_replies.refusals)
+        # One rotation per language: a refusal is the only reply an
+        # out-of-scope user ever gets, and it is produced without a model, so
+        # the localized wording has to be chosen here.
+        self._refusals = {
+            language: RefusalRotation(canned_replies.refusals_for(language))
+            for language in ReplyLanguage
+        }
+        self._response_policy = response_policy or policy_from_urls(
+            canned_replies.error_reply,
+            # Our own handoff block is trusted text; its links stay allowed so
+            # the guard cannot delete the contact it is meant to deliver.
+            (enrollment_url, *find_urls(human_contact_reply)),
+            translations={
+                language.value: canned_replies.reply("error_reply", language)
+                for language in ReplyLanguage
+            },
+        )
+        self._reply_timeout_seconds = reply_timeout_seconds
         self._rate_limiter = SlidingWindowRateLimiter(
             rate_limit_policy,
             rate_limit_clock,
@@ -305,8 +334,12 @@ class Pipeline:
             await self._notify_admin(message.number, text)
         logger.info("replied to %s (message %s)", message.number, message.message_id)
 
-    async def _canned_plan(self, key: str, language: ReplyLanguage) -> ReplyPlan:
-        return ReplyPlan(self._canned_replies.reply(key, language))
+    async def _canned_plan(self, key: str, language: ReplyLanguage) -> Response:
+        return Response(
+            self._canned_replies.reply(key, language),
+            ResponseSource.CANNED,
+            language,
+        )
 
     async def _produce_reply(
         self,
@@ -314,19 +347,27 @@ class Pipeline:
         number: str,
         language: ReplyLanguage,
         message_id: str,
-    ) -> ReplyPlan:
+    ) -> Response:
         history = await self._conversation_store.recent_messages(number)
         await self._conversation_store.append_message(
             number,
             ConversationMessage("user", text, datetime.now(UTC)),
         )
         try:
-            return await self._reply_for(text, number, history, language)
+            # The webhook was acked long before this runs, so a provider that
+            # never answers would otherwise mean a user who never hears back.
+            # The deadline turns a hung call into the canned error reply.
+            async with asyncio.timeout(self._reply_timeout_seconds):
+                return await self._reply_for(text, number, history, language)
         except Exception:
             # Guards the whole reply-producing step, not just one stage of it:
             # every stage added here must degrade to a reply, never to silence.
             logger.exception("reply production failed for %s", message_id)
-            return ReplyPlan(self._canned_replies.reply("error_reply", language))
+            return Response(
+                self._canned_replies.reply("error_reply", language),
+                ResponseSource.CANNED,
+                language,
+            )
 
     async def _handle_takeover_signal(self, message: InboundMessage) -> None:
         """A from-me message is either Bella's own echo or a human typing in.
@@ -402,19 +443,26 @@ class Pipeline:
         return marker
 
     async def _reply_with_presence(
-        self, number: str, produce: Awaitable[ReplyPlan]
-    ) -> ReplyPlan:
-        """Bracket presence (available/composing/paused) around producing and
-        sending a reply — composing must cover the seconds of reply
-        production, not just the send. The apostila path already sent its
-        own document, so an already_sent plan skips the send but still
-        clears presence. Shared by every branch that sends one text reply
-        to a user chat."""
+        self, number: str, produce: Awaitable[Response]
+    ) -> Response:
+        """Bracket presence around producing, finalizing and sending a reply.
+
+        Composing must cover the seconds of reply production, not just the
+        send. This is also the single funnel every user-facing reply passes
+        through, so the ResponsePolicy runs here: whatever a branch produced,
+        what leaves is guarded, WhatsApp-formatted, non-empty and split into
+        sendable messages. The returned Response carries the finalized text so
+        conversation history records what the user actually saw. The apostila
+        path already sent its own document, so an already_sent response skips
+        the send but still clears presence.
+        """
         async with self._reply_presence(number):
-            plan = await produce
-            if not plan.already_sent:
-                await self._send_text(number, plan.text)
-            return plan
+            response = await produce
+            chunks = self._response_policy.finalize(response)
+            if not response.already_sent:
+                for chunk in chunks:
+                    await self._send_text(number, chunk)
+            return replace(response, text="\n\n".join(chunks))
 
     @asynccontextmanager
     async def _reply_presence(self, number: str) -> AsyncIterator[None]:
@@ -535,49 +583,32 @@ class Pipeline:
         number: str,
         history: Sequence[ConversationMessage],
         language: ReplyLanguage,
-    ) -> ReplyPlan:
+    ) -> Response:
         # 1. If user is in an active feedback session (phase is not IDLE)
         if self._feedback_collector is not None:
             phase, _ = await self._conversation_store.get_feedback_draft(number)
             if phase != FeedbackPhase.IDLE:
-                result = await self._feedback_collector.process_turn(
-                    number, text, self._conversation_store, history
-                )
-                if result.confirmed and self._triage_worker is not None:
-                    task = asyncio.create_task(self._triage_worker.process_pending())
-                    self._background_tasks.add(task)
-                    task.add_done_callback(self._background_tasks.discard)
-                return ReplyPlan(result.reply_text)
+                return await self._feedback_turn(number, text, history, language)
 
         # 2. If not in feedback session, classify with scope_gate.classify(text)
         category = await self._scope_gate.classify(text)
         if category is RouteCategory.OUT_OF_SCOPE:
-            return ReplyPlan(self._refusals.take(number))
+            return self._canned(self._refusal_for(number, language), language)
         if category is RouteCategory.GREETING:
             greeting = self._canned_replies.reply("greeting_reply", language)
             if not greeting:
-                greeting = self._refusals.take(number)
-            return ReplyPlan(greeting)
+                greeting = self._refusal_for(number, language)
+            return self._canned(greeting, language)
         if category is RouteCategory.HUMAN_REQUESTED:
-            contact = self._human_contact_reply
-            if language is not ReplyLanguage.PORTUGUESE:
-                intro = self._canned_replies.reply("human_contact_intro", language)
-                contact = f"{intro}\n{contact}"
-            return ReplyPlan(contact, needs_handoff=True)
+            return self._handoff_response(language)
         if category is RouteCategory.APP_FEEDBACK:
             if self._feedback_collector is not None:
-                result = await self._feedback_collector.process_turn(
-                    number, text, self._conversation_store, history
-                )
-                if result.confirmed and self._triage_worker is not None:
-                    task = asyncio.create_task(self._triage_worker.process_pending())
-                    self._background_tasks.add(task)
-                    task.add_done_callback(self._background_tasks.discard)
-                return ReplyPlan(result.reply_text)
+                return await self._feedback_turn(number, text, history, language)
         if category is RouteCategory.APOSTILA_REQUEST:
             if not self._apostila_path.is_file():
-                return ReplyPlan(
-                    self._canned_replies.reply("apostila_soon_reply", language)
+                return self._canned(
+                    self._canned_replies.reply("apostila_soon_reply", language),
+                    language,
                 )
             caption = self._canned_replies.reply("apostila_caption", language)
             try:
@@ -588,20 +619,86 @@ class Pipeline:
                 )
             except Exception:
                 logger.exception("failed to send apostila to %s", number)
-                return ReplyPlan(
-                    self._canned_replies.reply("apostila_error_reply", language)
+                return self._canned(
+                    self._canned_replies.reply("apostila_error_reply", language),
+                    language,
                 )
-            return ReplyPlan(caption, already_sent=True)
+            return Response(
+                caption,
+                ResponseSource.CANNED,
+                language,
+                already_sent=True,
+            )
 
         target_answerer = self._support_answerer or self._answerer
         answer = await target_answerer.answer(text, category, history)
         reply_text = answer.text
-        if answer.needs_handoff:
+        if answer.needs_handoff and self._human_contact_reply:
+            # Only attach the heading when there is a contact under it; an
+            # unconfigured deployment used to emit a dangling "Contato humano:".
             heading = self._canned_replies.reply("human_contact_intro", language)
             reply_text = (
                 f"{reply_text}\n\n{heading}\n{self._human_contact_reply}"
             )
-        return ReplyPlan(
-            strip_foreign_urls(reply_text, self._enrollment_url),
+        # The URL allowlist is applied by the ResponsePolicy, which knows this
+        # text is model-authored — see `_reply_with_presence`.
+        return Response(
+            reply_text,
+            ResponseSource.ANSWERER,
+            language,
             needs_handoff=answer.needs_handoff,
         )
+
+    def _canned(self, text: str, language: ReplyLanguage) -> Response:
+        return Response(text, ResponseSource.CANNED, language)
+
+    def _refusal_for(self, number: str, language: ReplyLanguage) -> str:
+        return self._refusals[language].take(number)
+
+    def _handoff_response(self, language: ReplyLanguage) -> Response:
+        """Hand the user a person to talk to, or say a person was notified.
+
+        The admin notification fires either way (`needs_handoff`), so a
+        deployment with no configured contact still reaches a human — what it
+        must not do is answer the user with an empty message.
+        """
+        if not self._human_contact_reply:
+            return Response(
+                self._canned_replies.reply("no_contact_reply", language),
+                ResponseSource.CANNED,
+                language,
+                needs_handoff=True,
+            )
+        contact = self._human_contact_reply
+        if language is not ReplyLanguage.PORTUGUESE:
+            intro = self._canned_replies.reply("human_contact_intro", language)
+            contact = f"{intro}\n{contact}"
+        return Response(
+            contact,
+            ResponseSource.CANNED,
+            language,
+            needs_handoff=True,
+        )
+
+    async def _feedback_turn(
+        self,
+        number: str,
+        text: str,
+        history: Sequence[ConversationMessage],
+        language: ReplyLanguage,
+    ) -> Response:
+        """One turn of the feedback dialogue, including the triage kick-off.
+
+        The collector's reply is partly model-authored (the follow-up
+        question), so it is tagged FEEDBACK and gets the same output guard as
+        any other generated text.
+        """
+        assert self._feedback_collector is not None
+        result = await self._feedback_collector.process_turn(
+            number, text, self._conversation_store, history
+        )
+        if result.confirmed and self._triage_worker is not None:
+            task = asyncio.create_task(self._triage_worker.process_pending())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        return Response(result.reply_text, ResponseSource.FEEDBACK, language)

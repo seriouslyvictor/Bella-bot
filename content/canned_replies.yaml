@@ -40,6 +40,13 @@ rate_limit_reply: >-
 
 human_contact_intro: "Contato humano:"
 
+# Sent when a user asks for a person but no human contact is configured.
+# Without it the handoff branch had nothing to say and sent an empty
+# message; the team is still notified either way.
+no_contact_reply: >-
+  Claro! Já avisei nossa equipe técnica sobre a sua solicitação 🙌 Alguém do
+  time vai te responder por aqui assim que possível.
+
 greeting_reply: >-
   Olá! Eu sou a Nova, assistente técnica de aplicações 😊 Posso te ajudar com dúvidas e suporte técnico do Report Generator 9000 ou registrar sugestões e relatos de problemas. Como posso te ajudar hoje?
 
@@ -57,6 +64,8 @@ translations:
       I encountered a technical issue on my end. Please try again in a moment.
     human_contact_intro: >-
       Here is the human contact:
+    no_contact_reply: >-
+      Sure! I've let our technical team know about your request. Someone will get back to you here as soon as possible.
     greeting_reply: >-
       Hello! I'm Nova, application technical assistant 😊 I can help with Report Generator 9000 support or register your feedback and bug reports. How can I help you today?
   es:
@@ -68,5 +77,7 @@ translations:
       Tuve un problema técnico. Inténtalo de nuevo en unos instantes.
     human_contact_intro: >-
       Claro, este es el contacto humano:
+    no_contact_reply: >-
+      ¡Claro! Ya avisé a nuestro equipo técnico sobre tu solicitud. Alguien te responderá por aquí lo antes posible.
     greeting_reply: >-
       ¡Hola! Soy Nova, asistente técnica de aplicaciones 😊 Puedo ayudarte con dudas del Report Generator 9000 o registrar tus comentarios y reportes de errores. ¿En qué puedo ayudarte hoy?
