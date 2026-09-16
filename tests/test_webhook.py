@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
-from bella.evolution import PresenceState
+from bella.diagnostics import SelfTest
+from bella.evolution import PresenceState, WhatsAppSender
 from bella.feedback_collector import (
     ExtractedFeedback,
     FeedbackCollector,
@@ -27,9 +28,9 @@ from bella.feedback_collector import (
     FeedbackPhase,
 )
 from bella.feedback_collector import FeedbackResult
-from bella.pipeline import AnswerResult
+from bella.pipeline import AnswerResult, Answerer
 from bella.reply_language import ReplyLanguage
-from bella.scope_gate import RouteCategory
+from bella.scope_gate import RouteCategory, ScopeGate
 from bella.triage_worker import GitHubIssuePublisher, TriageWorker
 from tests.conftest import (
     TEST_API_KEY,
@@ -2264,3 +2265,71 @@ def test_conversation_history_records_what_the_user_actually_saw(
 
     stored = asyncio.run(store.recent_messages("5511999999999"))
     assert stored[-1].text == "Clique em *Gerar*"
+
+
+def admin_payload(text: str, message_id: str) -> dict[str, Any]:
+    return make_webhook_payload(text, message_id=message_id, chat=ADMIN_CHAT)
+
+
+def test_admin_diag_command_reports_each_dependency(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        admin_contact=ADMIN,
+        self_test=SelfTest(
+            InMemoryConversationStore(),
+            cast(WhatsAppSender, sender),
+            cast(ScopeGate, FakeScopeGate()),
+            cast(Answerer, FakeAnswerer(fail=True)),
+        ),
+    )
+
+    response = client.post(WEBHOOK, json=admin_payload("diag", "DIAG-1"))
+
+    assert response.status_code == 200
+    number, report = sender.sent[0]
+    assert number == ADMIN
+    assert "modelo agente" in report
+    assert "RuntimeError: simulated answering failure" in report
+
+
+def test_diag_from_a_user_is_not_a_command(sender: FakeSender) -> None:
+    """Only the admin contact reaches the Control Channel (spec story 11)."""
+    gate = FakeScopeGate(RouteCategory.OUT_OF_SCOPE)
+    client = make_test_client(sender, scope_gate=gate, admin_contact=ADMIN)
+
+    client.post(WEBHOOK, json=make_webhook_payload("diag", message_id="DIAG-USER"))
+
+    assert gate.seen == ["diag"]
+    assert sender.sent[0][1] in canned_replies().refusals
+
+
+def test_a_reply_failure_tells_the_admin_what_broke(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(fail=True),
+        admin_contact=ADMIN,
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("oi", message_id="FAIL-NOTICE"))
+
+    sent = dict(sender.sent)
+    # The user still gets the canned apology, unchanged.
+    assert sent[USER] == canned_replies().error_reply
+    # The operator gets the cause, which is the part the logs used to hold.
+    assert "RuntimeError: simulated Scope Gate failure" in sent[ADMIN]
+    assert "diag" in sent[ADMIN]
+
+
+def test_repeated_failures_do_not_flood_the_admin(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(fail=True),
+        admin_contact=ADMIN,
+    )
+
+    for sequence in range(3):
+        client.post(
+            WEBHOOK, json=make_webhook_payload("oi", message_id=f"FLOOD-{sequence}")
+        )
+
+    assert [number for number, _ in sender.sent].count(ADMIN) == 1

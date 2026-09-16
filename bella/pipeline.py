@@ -30,11 +30,17 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from bella.answer_guard import find_urls
 from bella.canned_replies import CannedReplies
-from bella.control_channel import not_paused_reply, parse_command, resumed_reply
+from bella.control_channel import (
+    DiagCommand,
+    VoltarCommand,
+    not_paused_reply,
+    parse_command,
+    resumed_reply,
+)
 from bella.conversation_store import (
     ConversationMessage,
     ConversationStore,
@@ -56,6 +62,11 @@ from bella.response import (
 from bella.retention import run_retention_job
 from bella.scope_gate import RouteCategory, ScopeGate
 from bella.triage_worker import TriageWorker
+
+if TYPE_CHECKING:
+    # diagnostics imports Answerer from this module, so the seam is typed
+    # without making the import cycle real at runtime.
+    from bella.diagnostics import SelfTest
 
 logger = logging.getLogger("bella")
 
@@ -183,6 +194,8 @@ class Pipeline:
         triage_worker: TriageWorker | None = None,
         response_policy: ResponsePolicy | None = None,
         reply_timeout_seconds: float = 30.0,
+        self_test: "SelfTest | None" = None,
+        failure_notice_interval_seconds: float = 300.0,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
@@ -215,6 +228,11 @@ class Pipeline:
             },
         )
         self._reply_timeout_seconds = reply_timeout_seconds
+        self._self_test = self_test
+        # A broken dependency fails every message, so the admin gets the
+        # real exception at most once per window instead of once per user.
+        self._failure_notice_interval = failure_notice_interval_seconds
+        self._last_failure_notice: float | None = None
         self._rate_limiter = SlidingWindowRateLimiter(
             rate_limit_policy,
             rate_limit_clock,
@@ -359,10 +377,14 @@ class Pipeline:
             # The deadline turns a hung call into the canned error reply.
             async with asyncio.timeout(self._reply_timeout_seconds):
                 return await self._reply_for(text, number, history, language)
-        except Exception:
+        except Exception as error:
             # Guards the whole reply-producing step, not just one stage of it:
             # every stage added here must degrade to a reply, never to silence.
             logger.exception("reply production failed for %s", message_id)
+            # The user gets the canned apology; the operator gets the cause.
+            # Without this, an outage is indistinguishable from a bad answer
+            # unless someone is watching the container logs.
+            await self._notify_admin_failure(number, error)
             return Response(
                 self._canned_replies.reply("error_reply", language),
                 ResponseSource.CANNED,
@@ -413,6 +435,13 @@ class Pipeline:
         command = parse_command(message.text)
         if command is None:
             return False
+        if isinstance(command, DiagCommand):
+            await self._send_text(message.number, await self._run_self_test())
+            logger.info(
+                "control channel diag handled (message %s)", message.message_id
+            )
+            return True
+        assert isinstance(command, VoltarCommand)
         if await self._pause_active(command.target_number):
             await self._conversation_store.clear_pause(command.target_number)
             reply = resumed_reply(command.target_number)
@@ -563,6 +592,46 @@ class Pipeline:
             raise
         if message_id:
             self._echo_ledger.record_id(key, message_id)
+
+    async def _run_self_test(self) -> str:
+        """Answer `diag` with what each dependency actually did."""
+        if self._self_test is None:
+            return "Diagnóstico indisponível: self-test não configurado."
+        from bella.diagnostics import describe_error, format_report
+
+        try:
+            return format_report(await self._self_test.run())
+        except Exception as error:
+            logger.exception("self-test failed")
+            return f"Diagnóstico falhou: {describe_error(error)}"
+
+    async def _notify_admin_failure(
+        self, user_number: str, error: BaseException
+    ) -> None:
+        """Forward a reply-production failure to the admin, at most once per
+        window. A dependency outage fails every inbound message, so an
+        unthrottled notice would bury the admin in the same error."""
+        if not self._admin_contact or user_number == self._admin_contact:
+            return
+        now = monotonic()
+        if (
+            self._last_failure_notice is not None
+            and now - self._last_failure_notice < self._failure_notice_interval
+        ):
+            return
+        self._last_failure_notice = now
+        from bella.diagnostics import describe_error
+
+        notification = (
+            "Falha da Nova\n"
+            f"Usuario: {user_number}\n"
+            f"Erro: {describe_error(error)}\n"
+            "Envie 'diag' para testar cada dependência."
+        )
+        try:
+            await self._send_text(self._admin_contact, notification)
+        except Exception:
+            logger.exception("failed to notify admin about a reply failure")
 
     async def _notify_admin(self, user_number: str, summary: str) -> None:
         if not self._admin_contact or user_number == self._admin_contact:

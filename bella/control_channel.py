@@ -14,6 +14,10 @@ import re
 from dataclasses import dataclass
 
 _VOLTAR_PATTERN = re.compile(r"^voltar\s+(.+)$", re.IGNORECASE)
+# The operator's substitute for log access: `diag` runs the self-test and
+# reports which dependency is failing. Deterministic like `voltar`, so it
+# still works when the models are exactly what is broken.
+_DIAG_PATTERN = re.compile(r"^(?:diag|diagnostico|diagnóstico)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -21,7 +25,15 @@ class VoltarCommand:
     target_number: str  # digits-only, matches a ConversationStore key
 
 
-def parse_command(text: str) -> VoltarCommand | None:
+@dataclass(frozen=True)
+class DiagCommand:
+    """Run the dependency self-test and report it back to the admin chat."""
+
+
+Command = VoltarCommand | DiagCommand
+
+
+def parse_command(text: str) -> Command | None:
     """Parse one line of command text.
 
     Number matching is digits-only and tolerant of formatting (punctuation,
@@ -32,7 +44,10 @@ def parse_command(text: str) -> VoltarCommand | None:
     (e.g. a missing country code) safely yields the honest not-paused notice
     rather than resuming a wrong chat.
     """
-    match = _VOLTAR_PATTERN.match(text.strip())
+    stripped = text.strip()
+    if _DIAG_PATTERN.match(stripped):
+        return DiagCommand()
+    match = _VOLTAR_PATTERN.match(stripped)
     if match is None:
         return None
     target_number = "".join(

@@ -17,6 +17,7 @@ from bella.evolution import PresenceState
 from bella.feedback_collector import FeedbackCollector
 from bella.pipeline import AnswerResult, Pipeline
 from bella.rate_limit import RateLimitPolicy
+from bella.diagnostics import SelfTest
 from bella.response import ResponsePolicy
 from bella.scope_gate import RouteCategory
 from bella.triage_worker import TriageWorker
@@ -169,6 +170,7 @@ def make_test_client(
     triage_worker: TriageWorker | None = None,
     human_contact_reply: str | None = None,
     response_policy: ResponsePolicy | None = None,
+    self_test: SelfTest | None = None,
 ) -> TestClient:
     pipeline = Pipeline(
         sender,
@@ -192,6 +194,7 @@ def make_test_client(
         support_answerer=support_answerer,
         triage_worker=triage_worker,
         response_policy=response_policy,
+        self_test=self_test,
     )
     app = create_app(
         make_settings(),

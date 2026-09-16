@@ -36,7 +36,10 @@ _Avoid_: handoff (that's the notification to the owner, which often precedes a t
 The per-conversation sliding quiet period (default 1 hour, reset by every Takeover message) during which Bella stores messages but never answers them, because the human owns the conversation. The sanctioned exception to always-reply. Ends by expiry or by a resume command on the Control Channel.
 
 **Control Channel**:
-The path for owner commands to Bella. First source: messages from the admin contact number; recognized future source: the self-chat on Bella's own number. Commands never reach the Scope Gate or the LLM.
+The path for owner commands to Bella. First source: messages from the admin contact number; recognized future source: the self-chat on Bella's own number. Commands never reach the Scope Gate or the LLM. Two commands: `voltar <numero>` ends a Takeover Pause, and `diag` runs the Self-Test.
+
+**Self-Test**:
+The `diag` command's dependency probe — database, WhatsApp gateway, router model, agent model, feedback extractor — reported back to the admin chat with each one's real error. It exists because every failure inside reply production degrades to the same canned apology, so without it an operator with no log access cannot tell an outage from a bad answer. The same error text is also pushed to the admin (throttled) the first time a reply fails.
 
 **Owner** (message role):
 A human-typed message sent from Bella's number in a user chat. Never Bella's own words; stored under a distinct role so the LLM cannot mistake a human's commitments for its own.

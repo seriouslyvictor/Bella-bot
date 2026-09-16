@@ -9,6 +9,7 @@ from bella.app_registry import AppRegistry
 from bella.canned_replies import CannedReplies
 from bella.config import Settings
 from bella.conversation_store import PostgresConversationStore
+from bella.diagnostics import SelfTest
 from bella.course_content import CourseContent
 from bella.evolution import EvolutionSender
 from bella.feedback_collector import FeedbackCollector
@@ -96,12 +97,24 @@ def build_runtime(settings: Settings) -> Runtime:
         },
     )
 
+    sender = EvolutionSender(
+        base_url=settings.evolution_url,
+        api_key=settings.evolution_api_key,
+        instance_id=settings.evolution_instance_id,
+    )
+
+    # The operator's stand-in for log access: `diag` on the Control Channel
+    # probes each dependency and names the one that is failing.
+    self_test = SelfTest(
+        conversation_store,
+        sender,
+        scope_gate,
+        support_answerer,
+        feedback_collector=feedback_collector,
+    )
+
     pipeline = Pipeline(
-        EvolutionSender(
-            base_url=settings.evolution_url,
-            api_key=settings.evolution_api_key,
-            instance_id=settings.evolution_instance_id,
-        ),
+        sender,
         scope_gate,
         support_answerer,
         canned,
@@ -116,5 +129,6 @@ def build_runtime(settings: Settings) -> Runtime:
         support_answerer=support_answerer,
         triage_worker=triage_worker,
         response_policy=response_policy,
+        self_test=self_test,
     )
     return Runtime(pipeline=pipeline, triage_worker=triage_worker)
