@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from google import genai
 
+from bella.answer_guard import find_urls
 from bella.app_registry import AppRegistry
 from bella.canned_replies import CannedReplies
 from bella.config import Settings
@@ -14,6 +15,8 @@ from bella.feedback_collector import FeedbackCollector
 from bella.gemini_answerer import GeminiSupportAnswerer
 from bella.gemini_gate import GeminiScopeGate
 from bella.pipeline import Pipeline
+from bella.reply_language import ReplyLanguage
+from bella.response import policy_from_urls
 from bella.triage_worker import GitHubIssuePublisher, TriageWorker
 
 
@@ -71,6 +74,28 @@ def build_runtime(settings: Settings) -> Runtime:
 
     canned = CannedReplies.from_yaml(settings.canned_replies_path)
 
+    # A deployment without an Enrollment Card (every Nova deployment) has no
+    # contact from content, so the configured one is the source of truth. An
+    # unset contact is fine: the handoff branch says a human was notified
+    # instead of sending nothing.
+    if not human_contact_reply:
+        human_contact_reply = settings.human_contact_reply
+
+    # The reply contract: what may be linked, how long a message may be, and
+    # what a reply degrades to when a branch produces nothing.
+    response_policy = policy_from_urls(
+        canned.error_reply,
+        (
+            *settings.allowed_reply_urls,
+            enrollment_url,
+            *find_urls(human_contact_reply),
+        ),
+        translations={
+            language.value: canned.reply("error_reply", language)
+            for language in ReplyLanguage
+        },
+    )
+
     pipeline = Pipeline(
         EvolutionSender(
             base_url=settings.evolution_url,
@@ -90,5 +115,6 @@ def build_runtime(settings: Settings) -> Runtime:
         feedback_collector=feedback_collector,
         support_answerer=support_answerer,
         triage_worker=triage_worker,
+        response_policy=response_policy,
     )
     return Runtime(pipeline=pipeline, triage_worker=triage_worker)

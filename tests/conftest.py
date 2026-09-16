@@ -17,6 +17,7 @@ from bella.evolution import PresenceState
 from bella.feedback_collector import FeedbackCollector
 from bella.pipeline import AnswerResult, Pipeline
 from bella.rate_limit import RateLimitPolicy
+from bella.response import ResponsePolicy
 from bella.scope_gate import RouteCategory
 from bella.triage_worker import TriageWorker
 
@@ -166,6 +167,8 @@ def make_test_client(
     feedback_collector: FeedbackCollector | None = None,
     support_answerer: FakeAnswerer | None = None,
     triage_worker: TriageWorker | None = None,
+    human_contact_reply: str | None = None,
+    response_policy: ResponsePolicy | None = None,
 ) -> TestClient:
     pipeline = Pipeline(
         sender,
@@ -175,7 +178,11 @@ def make_test_client(
         course_content().enrollment_url,
         conversation_store or InMemoryConversationStore(),
         apostila_path or make_settings().apostila_path,
-        course_content().human_contact_reply,
+        (
+            course_content().human_contact_reply
+            if human_contact_reply is None
+            else human_contact_reply
+        ),
         admin_contact,
         RateLimitPolicy(rate_limit_max_messages, rate_limit_window_seconds),
         rate_limit_clock or monotonic,
@@ -184,6 +191,7 @@ def make_test_client(
         feedback_collector=feedback_collector,
         support_answerer=support_answerer,
         triage_worker=triage_worker,
+        response_policy=response_policy,
     )
     app = create_app(
         make_settings(),

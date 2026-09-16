@@ -26,7 +26,9 @@ from bella.feedback_collector import (
     FeedbackDraft,
     FeedbackPhase,
 )
+from bella.feedback_collector import FeedbackResult
 from bella.pipeline import AnswerResult
+from bella.reply_language import ReplyLanguage
 from bella.scope_gate import RouteCategory
 from bella.triage_worker import GitHubIssuePublisher, TriageWorker
 from tests.conftest import (
@@ -185,9 +187,8 @@ def test_apostila_request_without_pdf_gets_coming_soon_reply(
     )
 
     assert answerer.seen == []
-    assert sender.sent == [
-        ("5511999999999", canned_replies().apostila_soon_reply)
-    ]
+    assert canned_replies().apostila_soon_reply == ""
+    assert sender.sent == [("5511999999999", canned_replies().error_reply)]
 
 
 def test_apostila_request_with_pdf_sends_native_document(
@@ -233,9 +234,11 @@ def test_apostila_send_failure_gets_apologetic_text_fallback(
     )
 
     assert sender.sent_documents == []
-    assert sender.sent == [
-        ("5511999999999", canned_replies().apostila_error_reply)
-    ]
+    # The Nova content set no longer ships apostila copy, so this key is
+    # empty; the ResponsePolicy substitutes the canned fallback rather than
+    # letting an empty message reach the user.
+    assert canned_replies().apostila_error_reply == ""
+    assert sender.sent == [("5511999999999", canned_replies().error_reply)]
 
 
 def test_adding_apostila_at_configured_path_changes_behavior_without_restart(
@@ -258,9 +261,8 @@ def test_adding_apostila_at_configured_path_changes_behavior_without_restart(
         json=make_webhook_payload("E agora?", message_id="APOSTILA-AFTER"),
     )
 
-    assert sender.sent == [
-        ("5511999999999", canned_replies().apostila_soon_reply)
-    ]
+    assert canned_replies().apostila_soon_reply == ""
+    assert sender.sent == [("5511999999999", canned_replies().error_reply)]
     assert sender.sent_documents == [
         ("5511999999999", apostila, canned_replies().apostila_caption)
     ]
@@ -2114,3 +2116,151 @@ def test_nova_feedback_cancellation_clears_state(sender: FakeSender) -> None:
     assert phase == FeedbackPhase.IDLE
     assert stored_draft is None
 
+
+
+def test_model_markdown_is_rewritten_for_whatsapp(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(
+            response="## Como gerar\n\n- envie a planilha\n- clique em **Gerar**"
+        ),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("como gero?", message_id="MD-1"))
+
+    assert sender.sent == [
+        ("5511999999999", "*Como gerar*\n\n• envie a planilha\n• clique em *Gerar*")
+    ]
+
+
+def test_answer_with_a_foreign_url_is_guarded(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(response="Baixe em https://evil.example/malware agora"),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("onde baixo?", message_id="URL-1"))
+
+    assert sender.sent == [("5511999999999", "Baixe em agora")]
+
+
+def test_feedback_dialogue_replies_are_guarded_too(sender: FakeSender) -> None:
+    """The follow-up question is model-authored, so it gets the same guard."""
+    collector = MagicMock(spec=FeedbackCollector)
+    collector.process_turn = AsyncMock(
+        return_value=FeedbackResult(
+            reply_text="Me manda o print em https://evil.example/upload",
+            phase=FeedbackPhase.COLLECTING,
+            draft=None,
+        )
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_FEEDBACK),
+        feedback_collector=cast(FeedbackCollector, collector),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("deu erro", message_id="FB-GUARD"))
+
+    assert sender.sent == [("5511999999999", "Me manda o print em")]
+
+
+def test_a_long_answer_arrives_as_readable_messages(sender: FakeSender) -> None:
+    paragraph = "Explicação detalhada do passo. " * 60
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(response=f"{paragraph}\n\n{paragraph}"),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("me explica", message_id="LONG-1"))
+
+    assert len(sender.sent) > 1
+    assert all(len(text) <= 1600 for _, text in sender.sent)
+
+
+def test_an_empty_answer_never_reaches_the_user(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(response="   \n\n  "),
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("oi?", message_id="EMPTY-1"))
+
+    assert sender.sent == [("5511999999999", canned_replies().error_reply)]
+
+
+def test_out_of_scope_refusal_mirrors_the_user_language(sender: FakeSender) -> None:
+    client = make_test_client(sender, scope_gate=FakeScopeGate(RouteCategory.OUT_OF_SCOPE))
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Can you please write me a poem?", message_id="REFUSE-EN"
+        ),
+    )
+
+    assert sender.sent[0][1] in canned_replies().refusals_for(ReplyLanguage.ENGLISH)
+    assert sender.sent[0][1] not in canned_replies().refusals
+
+
+def test_human_request_without_a_configured_contact_still_answers(
+    sender: FakeSender,
+) -> None:
+    admin = "5511777777777"
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.HUMAN_REQUESTED),
+        human_contact_reply="",
+        admin_contact=admin,
+    )
+
+    client.post(
+        WEBHOOK,
+        json=make_webhook_payload("quero falar com alguém", message_id="NO-CONTACT"),
+    )
+
+    user_reply = sender.sent[0]
+    assert user_reply == (
+        "5511999999999",
+        canned_replies().reply("no_contact_reply", ReplyLanguage.PORTUGUESE),
+    )
+    # The team is still told, which is the part an unset contact must not lose.
+    assert any(number == admin for number, _ in sender.sent)
+
+
+def test_handoff_heading_is_omitted_when_there_is_no_contact(
+    sender: FakeSender,
+) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(response="Não tenho essa informação.", needs_handoff=True),
+        human_contact_reply="",
+    )
+
+    client.post(
+        WEBHOOK, json=make_webhook_payload("e o preço?", message_id="DANGLING-HEADING")
+    )
+
+    assert sender.sent[0][1] == "Não tenho essa informação."
+
+
+def test_conversation_history_records_what_the_user_actually_saw(
+    sender: FakeSender,
+) -> None:
+    store = InMemoryConversationStore()
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        answerer=FakeAnswerer(response="Clique em **Gerar**"),
+        conversation_store=store,
+    )
+
+    client.post(WEBHOOK, json=make_webhook_payload("como faço?", message_id="HIST-1"))
+
+    stored = asyncio.run(store.recent_messages("5511999999999"))
+    assert stored[-1].text == "Clique em *Gerar*"

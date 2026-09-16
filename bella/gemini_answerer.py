@@ -16,13 +16,21 @@ from bella.scope_gate import RouteCategory
 logger = logging.getLogger("bella")
 
 DEFAULT_AGENT_MODEL = "gemini-3.8-flash"
+# Milliseconds; see the Scope Gate for why a deadline is mandatory here.
+ANSWER_TIMEOUT_MS = 30_000
+# A WhatsApp reply that needs more than this is already too long to read
+# on a phone; the ResponsePolicy splits whatever still comes back long.
+ANSWER_MAX_OUTPUT_TOKENS = 700
 
 SYSTEM_PROMPT_TEMPLATE = """You are Nova, a warm, polite, and technical assistant representing the company.
 You assist users with technical questions, how-tos, and troubleshooting regarding our applications (primarily report_generator9000).
 
 Your style:
-- Friendly, professional, and clear in Portuguese (PT-BR).
-- Concise answers suitable for WhatsApp.
+- Friendly, professional, and clear.
+- Reply in the language of the user's latest message; default to Portuguese (PT-BR).
+- Concise answers suitable for WhatsApp: a few short paragraphs at most.
+- Plain text only. WhatsApp does not render Markdown headings, `**bold**` or
+  `-` bullet lists; use short lines instead.
 - When explaining technical steps, provide practical and actionable instructions.
 
 Strict Grounding Rules:
@@ -144,8 +152,10 @@ class GeminiSupportAnswerer:
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.0,
+            max_output_tokens=ANSWER_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
             response_schema=SupportAnswerPayload,
+            http_options=types.HttpOptions(timeout=ANSWER_TIMEOUT_MS),
         )
         contents = _build_contents(text, category, history)
 

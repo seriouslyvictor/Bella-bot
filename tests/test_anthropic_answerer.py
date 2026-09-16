@@ -9,9 +9,16 @@ being replayed as one of Bella's own — so it's unit-tested directly here.
 
 from datetime import UTC, datetime
 
-from bella.anthropic_answerer import _build_messages
-from bella.conversation_store import ConversationMessage
-from bella.scope_gate import RouteCategory
+import pytest
+
+# The Anthropic answerer is the retired SENAI path and its SDK is no longer a
+# project dependency, so a clean install has no `anthropic` module. Skipping
+# keeps the suite collectible instead of failing at import time for everyone.
+pytest.importorskip("anthropic")
+
+from bella.anthropic_answerer import _build_messages  # noqa: E402
+from bella.conversation_store import ConversationMessage  # noqa: E402
+from bella.scope_gate import RouteCategory  # noqa: E402
 
 
 def test_owner_history_is_reframed_as_a_user_turn_with_an_explicit_marker() -> None:

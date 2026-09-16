@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("bella")
 
 DEFAULT_AGENT_MODEL = "gemini-3.8-flash"
+# Milliseconds; the extractor runs inside the same acked-webhook budget
+# as the Scope Gate and the answerer.
+EXTRACTION_TIMEOUT_MS = 30_000
 
 
 class FeedbackPhase(StrEnum):
@@ -205,6 +208,7 @@ class FeedbackCollector:
             temperature=0.0,
             response_mime_type="application/json",
             response_schema=ExtractedFeedback,
+            http_options=types.HttpOptions(timeout=EXTRACTION_TIMEOUT_MS),
         )
 
         response = await self._client.aio.models.generate_content(
