@@ -257,7 +257,14 @@ class FeedbackCollector:
                 if self._inbox_path is not None:
                     from bella.inbox_writer import append_to_inbox
 
-                    append_to_inbox(self._inbox_path, draft, phone_number)
+                    try:
+                        append_to_inbox(self._inbox_path, draft, phone_number)
+                    except Exception as e:
+                        logger.warning(
+                            "failed to append feedback to inbox %s: %s",
+                            self._inbox_path,
+                            e,
+                        )
                 return FeedbackResult(
                     reply_text=(
                         f"Perfeito! Seu relato sobre o *{self._app_name}* foi confirmado e registrado com sucesso. "

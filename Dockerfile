@@ -11,12 +11,13 @@ WORKDIR /app
 # Copy pre-installed dependencies from builder.
 COPY --from=builder --chown=1000:1000 /build/deps /usr/local/lib/python3.12/site-packages
 
-# Create unprivileged user early; COPY --chown handles subsequent files.
-RUN useradd --create-home --uid 1000 bella
+# Create unprivileged user early; ensure /app is writable by bella.
+RUN useradd --create-home --uid 1000 bella && chown bella:bella /app
 
-# Copy application code and content.
+# Copy application code, content, and initial inbox.
 COPY --chown=1000:1000 bella ./bella
 COPY --chown=1000:1000 content ./content
+COPY --chown=1000:1000 inbox.md ./inbox.md
 
 # Pin asset locations; these must match COPY destinations.
 ENV PROFILE_PICTURE_PATH=/app/content/whatsapp_profile_picture.jpg
