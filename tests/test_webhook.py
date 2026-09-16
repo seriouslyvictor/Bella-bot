@@ -8,16 +8,27 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Event, Thread
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
-from pathlib import Path
+from google import genai
+import httpx
 import pytest
 
-from bella.scope_gate import RouteCategory
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
 from bella.evolution import PresenceState
+from bella.feedback_collector import (
+    ExtractedFeedback,
+    FeedbackCollector,
+    FeedbackDraft,
+    FeedbackPhase,
+)
 from bella.pipeline import AnswerResult
+from bella.scope_gate import RouteCategory
+from bella.triage_worker import GitHubIssuePublisher, TriageWorker
 from tests.conftest import (
     TEST_API_KEY,
     FakeAnswerer,
@@ -255,6 +266,7 @@ def test_adding_apostila_at_configured_path_changes_behavior_without_restart(
     ]
 
 
+@pytest.mark.skip(reason="Retired with SENAI apostila in Ticket 01")
 def test_apostila_unavailable_reply_mirrors_english(sender: FakeSender) -> None:
     client = make_test_client(
         sender,
@@ -336,8 +348,7 @@ def test_human_request_reply_mirrors_spanish(sender: FakeSender) -> None:
     )
 
     assert sender.sent[0][1].startswith("Claro")
-    assert "se imparte en portugues" in sender.sent[0][1]
-    assert course_content().enrollment_url in sender.sent[0][1]
+    assert "contacto humano" in sender.sent[0][1]
 
 
 def test_grounded_deflection_includes_contact_and_notifies_admin(
@@ -460,7 +471,7 @@ def test_out_of_scope_message_gets_a_canned_refusal_without_answering(
 def test_in_scope_categories_flow_to_answering(sender: FakeSender) -> None:
     for sequence, (text, category) in enumerate(
         [
-            ("oi bella", RouteCategory.GREETING),
+            ("como uso o app?", RouteCategory.APP_SUPPORT),
             ("o que vou aprender?", RouteCategory.COURSE_QUESTION),
         ],
         start=1,
@@ -1827,3 +1838,279 @@ def test_voltar_works_even_if_the_admin_chat_itself_is_paused(
 
     assert response.status_code == 200
     assert sender.sent == [(ADMIN, f"Bella reativada para {USER}.")]
+
+
+class _FakeGeminiResponse:
+    def __init__(self, parsed: Any = None, text: str | None = None) -> None:
+        self.parsed = parsed
+        self.text = text
+
+
+def _make_mock_gemini_client(response: Any) -> genai.Client:
+    mock_client = MagicMock(spec=genai.Client)
+    mock_client.aio = MagicMock()
+    mock_client.aio.models = MagicMock()
+    mock_generate = AsyncMock(return_value=response)
+    mock_client.aio.models.generate_content = mock_generate
+    return cast(genai.Client, mock_client)
+
+
+def test_nova_out_of_scope_canned_refusal(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.OUT_OF_SCOPE),
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Quanto custa um bitcoin?", message_id="NOVA-OOS"),
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    _, text = sender.sent[0]
+    assert "Nova" in text or "Report Generator" in text
+
+
+def test_nova_greeting_pleasantry_reply(sender: FakeSender) -> None:
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.GREETING),
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Olá, boa tarde!", message_id="NOVA-GREETING"),
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    _, text = sender.sent[0]
+    assert "Nova" in text
+    assert "ajudar" in text.lower()
+
+
+def test_nova_app_support_answered_from_knowledge_base(sender: FakeSender) -> None:
+    support_answerer = FakeAnswerer(
+        response="Para gerar o relatório, vá até a aba Relatórios e selecione o período desejado."
+    )
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_SUPPORT),
+        support_answerer=support_answerer,
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Como eu gero o relatório?", message_id="NOVA-SUPPORT"
+        ),
+    )
+
+    assert response.status_code == 200
+    assert sender.sent == [
+        (
+            USER,
+            "Para gerar o relatório, vá até a aba Relatórios e selecione o período desejado.",
+        )
+    ]
+
+
+def test_nova_feedback_lifecycle_fast_path_confirm_and_publish(
+    sender: FakeSender, tmp_path: Path
+) -> None:
+    inbox_file = tmp_path / "inbox.md"
+    store = InMemoryConversationStore()
+
+    extracted = ExtractedFeedback(
+        title="LibreOffice travou na pasta 115",
+        observed="Falha ao converter planilha em PDF",
+        expected="PDF gerado com sucesso",
+        evidence="Erro código 137 na pasta 115",
+        is_complete=True,
+    )
+    gemini_client = _make_mock_gemini_client(_FakeGeminiResponse(parsed=extracted))
+    collector = FeedbackCollector(
+        client=gemini_client,
+        inbox_path=inbox_file,
+    )
+
+    published_issue_urls: list[str] = []
+
+    def github_handler(request: httpx.Request) -> httpx.Response:
+        url = "https://github.com/seriouslyvictor/report_generator9000/issues/77"
+        published_issue_urls.append(url)
+        return httpx.Response(201, json={"html_url": url})
+
+    transport = httpx.MockTransport(github_handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    publisher = GitHubIssuePublisher(token="ghp_test_token", client=http_client)
+    triage_worker = TriageWorker(store=store, publisher=publisher)
+
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_FEEDBACK),
+        conversation_store=store,
+        feedback_collector=collector,
+        triage_worker=triage_worker,
+    )
+
+    # Turn 1: User provides complete feedback details (Fast-path)
+    r1 = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Tive um erro: LibreOffice travou na pasta 115",
+            message_id="FEEDBACK-TURN-1",
+        ),
+    )
+    assert r1.status_code == 200
+    assert len(sender.sent) == 1
+    _, reply_1 = sender.sent[0]
+    assert "Preparei um rascunho do seu relato" in reply_1
+    assert "LibreOffice travou na pasta 115" in reply_1
+    assert "Você confirma o envio deste ticket?" in reply_1
+
+    # Invariant check: Store is now in AWAITING_CONFIRMATION
+    phase, draft = asyncio.run(store.get_feedback_draft(USER))
+    assert phase == FeedbackPhase.AWAITING_CONFIRMATION
+    assert draft is not None
+    assert draft.title == "LibreOffice travou na pasta 115"
+
+    # Turn 2: User explicitly confirms
+    r2 = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Sim, confirmo! Pode enviar",
+            message_id="FEEDBACK-TURN-2",
+        ),
+    )
+    assert r2.status_code == 200
+    assert len(sender.sent) == 2
+    _, reply_2 = sender.sent[1]
+    assert "confirmado e registrado com sucesso" in reply_2
+
+    # Verification: State reset to IDLE in store
+    phase_after, draft_after = asyncio.run(store.get_feedback_draft(USER))
+    assert phase_after == FeedbackPhase.IDLE
+    assert draft_after is None
+
+    # Verification: Written to inbox.md
+    assert inbox_file.is_file()
+    inbox_content = inbox_file.read_text(encoding="utf-8")
+    assert "### LibreOffice travou na pasta 115" in inbox_content
+    assert "Status: needs-triage" in inbox_content
+
+    # Verification: Staged and processed by background triage worker
+    # Note: TestClient runs background tasks synchronously before returning
+    staged_feedback = store._staged_feedback[1]
+    assert staged_feedback.status == "published"
+    assert staged_feedback.github_issue_url == "https://github.com/seriouslyvictor/report_generator9000/issues/77"
+
+
+def test_nova_feedback_vague_prompts_clarification_then_confirms(
+    sender: FakeSender,
+) -> None:
+    store = InMemoryConversationStore()
+
+    vague_extracted = ExtractedFeedback(
+        title="Problema no app",
+        observed="Deu erro",
+        expected="",
+        evidence="",
+        is_complete=False,
+        follow_up_question="Qual foi a mensagem de erro que apareceu na tela?",
+    )
+    complete_extracted = ExtractedFeedback(
+        title="Erro 500 no login",
+        observed="Erro 500 ao logar",
+        expected="Login realizado",
+        evidence="Tela de login",
+        is_complete=True,
+    )
+
+    mock_client = MagicMock(spec=genai.Client)
+    mock_client.aio = MagicMock()
+    mock_client.aio.models = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            _FakeGeminiResponse(parsed=vague_extracted),
+            _FakeGeminiResponse(parsed=complete_extracted),
+        ]
+    )
+
+    collector = FeedbackCollector(client=cast(genai.Client, mock_client))
+    client = make_test_client(
+        sender,
+        scope_gate=FakeScopeGate(RouteCategory.APP_FEEDBACK),
+        conversation_store=store,
+        feedback_collector=collector,
+    )
+
+    # Turn 1: Vague feedback
+    r1 = client.post(
+        WEBHOOK,
+        json=make_webhook_payload("Deu erro aqui", message_id="VAGUE-1"),
+    )
+    assert r1.status_code == 200
+    assert len(sender.sent) == 1
+    _, reply_1 = sender.sent[0]
+    assert "Qual foi a mensagem de erro que apareceu na tela?" in reply_1
+
+    phase, _ = asyncio.run(store.get_feedback_draft(USER))
+    assert phase == FeedbackPhase.COLLECTING
+
+    # Turn 2: User provides error detail
+    r2 = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Apareceu erro 500 ao logar", message_id="VAGUE-2"
+        ),
+    )
+    assert r2.status_code == 200
+    assert len(sender.sent) == 2
+    _, reply_2 = sender.sent[1]
+    assert "Preparei um rascunho do seu relato" in reply_2
+    assert "Erro 500 no login" in reply_2
+
+    phase2, _ = asyncio.run(store.get_feedback_draft(USER))
+    assert phase2 == FeedbackPhase.AWAITING_CONFIRMATION
+
+
+def test_nova_feedback_cancellation_clears_state(sender: FakeSender) -> None:
+    store = InMemoryConversationStore()
+    draft = FeedbackDraft(
+        app_id="report_generator9000",
+        title="Erro no teste",
+        observed="Falha",
+        expected="Sucesso",
+        evidence="",
+        is_complete=True,
+    )
+    asyncio.run(
+        store.set_feedback_draft(USER, FeedbackPhase.AWAITING_CONFIRMATION, draft)
+    )
+
+    mock_client = MagicMock(spec=genai.Client)
+    collector = FeedbackCollector(client=cast(genai.Client, mock_client))
+    client = make_test_client(
+        sender,
+        conversation_store=store,
+        feedback_collector=collector,
+    )
+
+    response = client.post(
+        WEBHOOK,
+        json=make_webhook_payload(
+            "Cancela por favor", message_id="CANCEL-FEEDBACK"
+        ),
+    )
+
+    assert response.status_code == 200
+    assert len(sender.sent) == 1
+    _, reply = sender.sent[0]
+    assert "cancelado" in reply
+
+    phase, stored_draft = asyncio.run(store.get_feedback_draft(USER))
+    assert phase == FeedbackPhase.IDLE
+    assert stored_draft is None
+

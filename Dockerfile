@@ -24,6 +24,8 @@ ENV CANNED_REPLIES_PATH=/app/content/canned_replies.yaml
 ENV KNOWLEDGE_BASE_PATH=/app/content/knowledge_base.md
 ENV ENROLLMENT_CARD_PATH=/app/content/enrollment_card.yaml
 ENV APOSTILA_PATH=/app/content/apostila.pdf
+ENV APPS_DIR=/app/content/apps
+ENV INBOX_PATH=/app/inbox.md
 
 USER bella
 

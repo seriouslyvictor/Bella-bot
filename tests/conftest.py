@@ -14,10 +14,11 @@ from bella.config import Settings
 from bella.conversation_store import ConversationMessage, InMemoryConversationStore
 from bella.course_content import CourseContent
 from bella.evolution import PresenceState
+from bella.feedback_collector import FeedbackCollector
 from bella.pipeline import AnswerResult, Pipeline
 from bella.rate_limit import RateLimitPolicy
-from bella.seat_count import SeatCountRefresher
 from bella.scope_gate import RouteCategory
+from bella.triage_worker import TriageWorker
 
 TEST_API_KEY = "test-instance-token"
 
@@ -161,8 +162,10 @@ def make_test_client(
     rate_limit_clock: Callable[[], float] | None = None,
     takeover_pause_seconds: int = 3600,
     takeover_clock: Callable[[], datetime] | None = None,
-    seat_count_refresher: SeatCountRefresher | None = None,
     raise_server_exceptions: bool = True,
+    feedback_collector: FeedbackCollector | None = None,
+    support_answerer: FakeAnswerer | None = None,
+    triage_worker: TriageWorker | None = None,
 ) -> TestClient:
     pipeline = Pipeline(
         sender,
@@ -178,11 +181,13 @@ def make_test_client(
         rate_limit_clock or monotonic,
         takeover_pause_seconds,
         takeover_clock or (lambda: datetime.now(UTC)),
+        feedback_collector=feedback_collector,
+        support_answerer=support_answerer,
+        triage_worker=triage_worker,
     )
     app = create_app(
         make_settings(),
         pipeline,
-        seat_count_refresher=seat_count_refresher,
     )
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 

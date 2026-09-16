@@ -14,16 +14,17 @@ WHAT = "canned replies"
 class CannedReplies:
     refusals: tuple[str, ...]
     error_reply: str
-    apostila_soon_reply: str
-    apostila_caption: str
-    apostila_error_reply: str
     media_reply: str
     rate_limit_reply: str
     human_contact_intro: str
     translations: dict[str, dict[str, str]]
+    greeting_reply: str = ""
+    apostila_soon_reply: str = ""
+    apostila_caption: str = "Documento"
+    apostila_error_reply: str = ""
 
     def reply(self, key: str, language: ReplyLanguage) -> str:
-        default = cast(str, getattr(self, key))
+        default = cast(str, getattr(self, key, ""))
         return self.translations.get(language.value, {}).get(key, default)
 
     @classmethod
@@ -39,10 +40,8 @@ class CannedReplies:
             "media_reply",
             "rate_limit_reply",
             "error_reply",
-            "apostila_soon_reply",
-            "apostila_caption",
-            "apostila_error_reply",
             "human_contact_intro",
+            "greeting_reply",
         )
         translations: dict[str, dict[str, str]] = {}
         for language in ("en", "es"):
@@ -52,13 +51,15 @@ class CannedReplies:
             translations[language] = {
                 key: require_text(localized, key, f"{WHAT} {language} translations")
                 for key in translation_keys
+                if key in localized
             }
         return cls(
             refusals=require_text_list(refusals, "pt", f"{WHAT} refusals"),
             error_reply=require_text(raw, "error_reply", WHAT),
-            apostila_soon_reply=require_text(raw, "apostila_soon_reply", WHAT),
-            apostila_caption=require_text(raw, "apostila_caption", WHAT),
-            apostila_error_reply=require_text(raw, "apostila_error_reply", WHAT),
+            greeting_reply=str(raw.get("greeting_reply", "")),
+            apostila_soon_reply=str(raw.get("apostila_soon_reply", "")),
+            apostila_caption=str(raw.get("apostila_caption", "Documento")),
+            apostila_error_reply=str(raw.get("apostila_error_reply", "")),
             media_reply=require_text(raw, "media_reply", WHAT),
             rate_limit_reply=require_text(raw, "rate_limit_reply", WHAT),
             human_contact_intro=require_text(raw, "human_contact_intro", WHAT),

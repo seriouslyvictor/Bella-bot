@@ -11,6 +11,7 @@ import psycopg
 import pytest
 
 from bella.conversation_store import ConversationMessage, PostgresConversationStore
+from bella.feedback_collector import FeedbackDraft, FeedbackPhase
 
 DATABASE_URL = os.environ.get("BELLA_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -260,3 +261,100 @@ def test_postgres_retention_deletes_only_idle_conversations() -> None:
             await store.close()
 
     run_async(exercise())
+
+
+def test_postgres_feedback_draft_persists_and_survives_restart() -> None:
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        phone_number = f"test-draft-{uuid4()}"
+        draft = FeedbackDraft(
+            app_id="report_generator9000",
+            title="Falha no Playwright",
+            observed="Timeout na captura",
+            expected="Página capturada",
+            evidence="Pasta 115",
+            is_complete=True,
+        )
+
+        first_store = PostgresConversationStore(DATABASE_URL)
+        await first_store.start()
+        try:
+            assert await first_store.get_feedback_draft(phone_number) == (
+                FeedbackPhase.IDLE,
+                None,
+            )
+            await first_store.set_feedback_draft(
+                phone_number, FeedbackPhase.AWAITING_CONFIRMATION, draft
+            )
+        finally:
+            await first_store.close()
+
+        restarted_store = PostgresConversationStore(DATABASE_URL)
+        await restarted_store.start()
+        try:
+            phase, retrieved = await restarted_store.get_feedback_draft(phone_number)
+            assert phase == FeedbackPhase.AWAITING_CONFIRMATION
+            assert retrieved == draft
+
+            await restarted_store.clear_feedback_draft(phone_number)
+            assert await restarted_store.get_feedback_draft(phone_number) == (
+                FeedbackPhase.IDLE,
+                None,
+            )
+        finally:
+            await restarted_store.close()
+
+    run_async(exercise())
+
+
+def test_postgres_feedback_staging_lifecycle() -> None:
+    async def exercise() -> None:
+        assert DATABASE_URL is not None
+        phone_number = f"test-{uuid4()}"
+        draft = FeedbackDraft(
+            app_id="report_generator9000",
+            title="Erro no LibreOffice",
+            observed="Falha ao exportar PDF",
+            expected="Arquivo PDF gerado",
+            evidence="Log de erro linha 42",
+            is_complete=True,
+        )
+
+        first_store = PostgresConversationStore(DATABASE_URL)
+        await first_store.start()
+        try:
+            staged_id = await first_store.stage_feedback(phone_number, draft)
+            assert staged_id > 0
+
+            pending = await first_store.get_unprocessed_feedback()
+            assert any(item.id == staged_id for item in pending)
+            staged_item = next(item for item in pending if item.id == staged_id)
+            assert staged_item.phone_number == phone_number
+            assert staged_item.title == draft.title
+            assert staged_item.status == "staged"
+        finally:
+            await first_store.close()
+
+        restarted_store = PostgresConversationStore(DATABASE_URL)
+        await restarted_store.start()
+        try:
+            pending_restarted = await restarted_store.get_unprocessed_feedback()
+            assert any(item.id == staged_id for item in pending_restarted)
+
+            issue_url = "https://github.com/seriouslyvictor/report_generator9000/issues/42"
+            await restarted_store.mark_feedback_published(staged_id, issue_url)
+
+            pending_after_publish = await restarted_store.get_unprocessed_feedback()
+            assert not any(item.id == staged_id for item in pending_after_publish)
+
+            # Test failure recording
+            staged_id_2 = await restarted_store.stage_feedback(phone_number, draft)
+            await restarted_store.mark_feedback_failed(staged_id_2, "GitHub 500 server error")
+            pending_after_failure = await restarted_store.get_unprocessed_feedback()
+            assert not any(item.id == staged_id_2 for item in pending_after_failure)
+        finally:
+            await restarted_store.close()
+
+    run_async(exercise())
+
+

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 
 from bella.answer_guard import strip_foreign_urls
 from bella.canned_replies import CannedReplies
@@ -31,6 +31,7 @@ from bella.conversation_store import (
     ConversationStore,
 )
 from bella.evolution import InboundMessage, PresenceState, WhatsAppSender
+from bella.feedback_collector import FeedbackCollector, FeedbackPhase
 from bella.rate_limit import (
     RateLimitDecision,
     RateLimitPolicy,
@@ -39,6 +40,7 @@ from bella.rate_limit import (
 from bella.reply_language import ReplyLanguage, detect_reply_language
 from bella.retention import run_retention_job
 from bella.scope_gate import RouteCategory, ScopeGate
+from bella.triage_worker import TriageWorker
 
 logger = logging.getLogger("bella")
 
@@ -168,6 +170,9 @@ class Pipeline:
         rate_limit_clock: Callable[[], float] = monotonic,
         takeover_pause_seconds: int = 3600,
         takeover_clock: Callable[[], datetime] = _current_time,
+        feedback_collector: FeedbackCollector | None = None,
+        support_answerer: Answerer | None = None,
+        triage_worker: TriageWorker | None = None,
     ) -> None:
         self._sender = sender
         self._scope_gate = scope_gate
@@ -191,6 +196,10 @@ class Pipeline:
         self._active_reply_counts: dict[str, int] = {}
         self._takeover_pause_window = timedelta(seconds=takeover_pause_seconds)
         self._clock = takeover_clock
+        self._feedback_collector = feedback_collector
+        self._support_answerer = support_answerer or answerer
+        self._triage_worker = triage_worker
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self) -> None:
         await self._conversation_store.start()
@@ -199,6 +208,11 @@ class Pipeline:
         if self._presence_tasks:
             await asyncio.gather(
                 *tuple(self._presence_tasks),
+                return_exceptions=True,
+            )
+        if self._background_tasks:
+            await asyncio.gather(
+                *tuple(self._background_tasks),
                 return_exceptions=True,
             )
         await self._conversation_store.close()
@@ -522,15 +536,44 @@ class Pipeline:
         history: Sequence[ConversationMessage],
         language: ReplyLanguage,
     ) -> ReplyPlan:
+        # 1. If user is in an active feedback session (phase is not IDLE)
+        if self._feedback_collector is not None:
+            phase, _ = await self._conversation_store.get_feedback_draft(number)
+            if phase != FeedbackPhase.IDLE:
+                result = await self._feedback_collector.process_turn(
+                    number, text, self._conversation_store, history
+                )
+                if result.confirmed and self._triage_worker is not None:
+                    task = asyncio.create_task(self._triage_worker.process_pending())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                return ReplyPlan(result.reply_text)
+
+        # 2. If not in feedback session, classify with scope_gate.classify(text)
         category = await self._scope_gate.classify(text)
         if category is RouteCategory.OUT_OF_SCOPE:
             return ReplyPlan(self._refusals.take(number))
+        if category is RouteCategory.GREETING:
+            greeting = self._canned_replies.reply("greeting_reply", language)
+            if not greeting:
+                greeting = self._refusals.take(number)
+            return ReplyPlan(greeting)
         if category is RouteCategory.HUMAN_REQUESTED:
             contact = self._human_contact_reply
             if language is not ReplyLanguage.PORTUGUESE:
                 intro = self._canned_replies.reply("human_contact_intro", language)
                 contact = f"{intro}\n{contact}"
             return ReplyPlan(contact, needs_handoff=True)
+        if category is RouteCategory.APP_FEEDBACK:
+            if self._feedback_collector is not None:
+                result = await self._feedback_collector.process_turn(
+                    number, text, self._conversation_store, history
+                )
+                if result.confirmed and self._triage_worker is not None:
+                    task = asyncio.create_task(self._triage_worker.process_pending())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                return ReplyPlan(result.reply_text)
         if category is RouteCategory.APOSTILA_REQUEST:
             if not self._apostila_path.is_file():
                 return ReplyPlan(
@@ -549,7 +592,9 @@ class Pipeline:
                     self._canned_replies.reply("apostila_error_reply", language)
                 )
             return ReplyPlan(caption, already_sent=True)
-        answer = await self._answerer.answer(text, category, history)
+
+        target_answerer = self._support_answerer or self._answerer
+        answer = await target_answerer.answer(text, category, history)
         reply_text = answer.text
         if answer.needs_handoff:
             heading = self._canned_replies.reply("human_contact_intro", language)

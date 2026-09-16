@@ -1,10 +1,3 @@
-<!--
-  BASE DE CONHECIMENTO DA NOVA (Knowledge Base)
-  ==============================================
-  Conteúdo operacional e público sobre as aplicações suportadas pela Nova,
-  iniciando pelo Report Generator 9000 (report_generator9000).
--->
-
 # Base de Conhecimento — Report Generator 9000 (`report_generator9000`)
 
 O **Report Generator 9000** é uma aplicação web voltada para a geração automatizada do **RELATÓRIO TÉCNICO FINAL** das consultorias do **SEBRAETEC**. O relatório é um documento contratual que o representante legal do cliente assina, portanto cada afirmação contida nele deve ser rastreável a fatos observados ou entradas explicitamente fornecidas.

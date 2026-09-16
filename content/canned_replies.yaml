@@ -1,104 +1,72 @@
 # =====================================================================
-# RESPOSTAS PRONTAS (Canned Replies)
+# RESPOSTAS PRONTAS (Canned Replies) — NOVA
 # =====================================================================
-# Estas mensagens são enviadas VERBATIM — sem passar por nenhum modelo
-# (ver docs/adr/0002). Edite os textos à vontade; mantenha as chaves.
-#
-# refusals: recusas para mensagens fora de escopo. A Bella sorteia uma
-#   variante da lista do idioma detectado (pt é o padrão).
-# media_reply: resposta a áudios, imagens, figurinhas e documentos.
-# rate_limit_reply: enviada UMA vez quando o usuário excede o limite.
-# error_reply: enviada quando ocorre uma falha interna (a Bella nunca
-#   responde sem passar pelas proteções; na dúvida, pede para tentar de novo).
+# Mensagens enviadas sem passar por modelos de IA (proteção anti-injeção).
+# Identidade: Nova, assistente técnica de suporte e feedback de aplicações.
 # =====================================================================
 
 refusals:
   pt:
     - >-
-      Eu sou a Bella, assistente do curso de IA Generativa do SENAI 😊 Só
-      consigo ajudar com dúvidas sobre o curso, a apostila e a inscrição.
-      Quer saber alguma coisa sobre o curso?
+      Olá! Eu sou a Nova, assistente técnica das nossas aplicações, como o
+      Report Generator 9000 😊 Consigo ajudar com suporte, dúvidas de uso ou
+      coleta de feedback sobre nossos sistemas. Como posso te ajudar com o Report Generator?
     - >-
-      Essa eu vou ficar te devendo! 😅 Eu fui criada só para falar sobre o
-      curso "IA Generativa Aplicada a Programação" do SENAI — posso te contar
-      sobre o conteúdo, as datas ou como se inscrever.
+      Essa eu vou ficar te devendo! 😅 Fui criada para apoiar usuários com
+      dúvidas, funcionamento e sugestões sobre nossos sistemas (como o
+      Report Generator 9000). Quer saber mais sobre a geração de relatórios?
     - >-
-      Hmm, isso foge do meu assunto 🙈 Eu cuido apenas do curso de IA
-      Generativa do SENAI: conteúdo, apostila e inscrições. Como posso te
-      ajudar com isso?
+      Hmm, isso foge do meu escopo 🙈 Eu cuido do suporte e feedback das
+      nossas aplicações, como o Report Generator 9000. Posso te ajudar com
+      alguma dúvida sobre o sistema ou relatórios?
   en:
     - >-
-      I'm Bella, the assistant for SENAI's Generative AI course 😊 I can only
-      help with questions about the course, its workbook, and enrollment.
-      Anything you'd like to know about the course? (The course is taught in
-      Portuguese.)
+      Hello! I'm Nova, the technical assistant for our applications, including
+      Report Generator 9000 😊 I can help with troubleshooting, how-tos, and
+      collecting feedback about our apps.
   es:
     - >-
-      ¡Soy Bella, la asistente del curso de IA Generativa del SENAI! 😊 Solo
-      puedo ayudar con dudas sobre el curso, el material y la inscripción.
-      ¿Quieres saber algo sobre el curso? (El curso se imparte en portugués.)
+      ¡Hola! Soy Nova, la asistente técnica de nuestras aplicaciones, incluyendo
+      Report Generator 9000 😊 Puedo ayudarte con soporte, dudas técnicas y
+      feedback sobre nuestros sistemas.
 
 media_reply: >-
-  Por enquanto eu só entendo mensagens de texto 😊 Pode escrever a sua dúvida
-  sobre o curso que eu respondo!
+  Por enquanto eu só consigo processar mensagens de texto 😊 Pode descrever
+  sua dúvida, problema ou sugestão por escrito que eu te ajudo!
 
 rate_limit_reply: >-
-  Opa, muitas mensagens de uma vez! 😅 Me dá um minutinho e continuamos a
-  conversa, combinado?
+  Opa, muitas mensagens de uma vez só! 😅 Me dá um minutinho para processar e já
+  continuamos nossa conversa, combinado?
 
 human_contact_intro: "Contato humano:"
 
-apostila_soon_reply: >-
-  A apostila ainda esta sendo finalizada e vai estar disponivel em breve.
-  Enquanto isso, pode me perguntar sobre o conteudo que eu te ajudo por aqui!
+greeting_reply: >-
+  Olá! Eu sou a Nova, assistente técnica de aplicações 😊 Posso te ajudar com dúvidas e suporte técnico do Report Generator 9000 ou registrar sugestões e relatos de problemas. Como posso te ajudar hoje?
 
-apostila_caption: >-
-  Aqui esta a apostila do curso! Espero que aproveite a leitura.
-
-apostila_error_reply: >-
-  Desculpe, nao consegui enviar a apostila agora. Pode tentar novamente em
-  alguns instantes? Enquanto isso, posso responder suas duvidas sobre o conteudo.
+error_reply: >-
+  Tive um probleminha técnico por aqui 🙈 Poderia enviar sua mensagem novamente
+  em alguns instantes?
 
 translations:
   en:
     media_reply: >-
-      For now I can only understand text messages. Please type your question!
-      The course itself is taught in Portuguese.
+      For now I can only process text messages. Please type your question, issue, or feedback!
     rate_limit_reply: >-
-      That's a lot of messages at once! Give me a minute and we can continue.
-      The course itself is taught in Portuguese.
+      That's a lot of messages at once! Please give me a moment and we can continue.
     error_reply: >-
-      I had a technical problem on my side. Please try again in a moment.
-    apostila_soon_reply: >-
-      The workbook is still being finalized and will be available soon. In the
-      meantime, ask me anything about its content. The course is taught in Portuguese.
-    apostila_caption: >-
-      Here is the course workbook! The course itself is taught in Portuguese.
-    apostila_error_reply: >-
-      Sorry, I could not send the workbook right now. Please try again shortly.
-      The course itself is taught in Portuguese.
+      I encountered a technical issue on my end. Please try again in a moment.
     human_contact_intro: >-
-      Of course! Here is the human contact. The course is taught in Portuguese:
+      Here is the human contact:
+    greeting_reply: >-
+      Hello! I'm Nova, application technical assistant 😊 I can help with Report Generator 9000 support or register your feedback and bug reports. How can I help you today?
   es:
     media_reply: >-
-      Por ahora solo entiendo mensajes de texto. Escribe tu pregunta, por favor.
-      El curso se imparte en portugues.
+      Por ahora solo puedo procesar mensajes de texto. Por favor, escribe tu consulta, problema o sugerencia.
     rate_limit_reply: >-
-      Son muchos mensajes a la vez. Dame un minuto y continuamos. El curso se
-      imparte en portugues.
+      Son muchos mensajes a la vez. Dame un minuto y continuamos.
     error_reply: >-
-      Tuve un problema tecnico. Intentalo de nuevo en unos instantes.
-    apostila_soon_reply: >-
-      El cuaderno todavia se esta finalizando y estara disponible pronto.
-      Mientras tanto, preguntame por su contenido. El curso se imparte en portugues.
-    apostila_caption: >-
-      Aqui tienes el cuaderno del curso. El curso se imparte en portugues.
-    apostila_error_reply: >-
-      Lo siento, no pude enviar el cuaderno ahora. Intentalo de nuevo en breve.
-      El curso se imparte en portugues.
+      Tuve un problema técnico. Inténtalo de nuevo en unos instantes.
     human_contact_intro: >-
-      Claro. Este es el contacto humano. El curso se imparte en portugues:
-
-error_reply: >-
-  Tive um probleminha técnico aqui do meu lado 🙈 Pode enviar sua mensagem de
-  novo em instantes?
+      Claro, este es el contacto humano:
+    greeting_reply: >-
+      ¡Hola! Soy Nova, asistente técnica de aplicaciones 😊 Puedo ayudarte con dudas del Report Generator 9000 o registrar tus comentarios y reportes de errores. ¿En qué puedo ayudarte hoy?

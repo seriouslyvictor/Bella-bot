@@ -1,75 +1,94 @@
-"""The production object graph.
-
-Kept out of bella.app so that importing the app — which the tests do — never
-pays for `import anthropic` (~2s) and never needs the SDK installed. Tests
-build a Pipeline from fakes and hand it to create_app directly; this module is
-imported only by the production entrypoint.
-"""
+"""The production object graph for Nova."""
 
 from dataclasses import dataclass
-from datetime import timedelta
 
-from anthropic import AsyncAnthropic
+from google import genai
 
-from bella.availability import SenaiAvailabilitySource
-from bella.anthropic_answerer import AnthropicAnswerer
-from bella.anthropic_gate import AnthropicScopeGate
+from bella.app_registry import AppRegistry
 from bella.canned_replies import CannedReplies
 from bella.config import Settings
 from bella.conversation_store import PostgresConversationStore
 from bella.course_content import CourseContent
 from bella.evolution import EvolutionSender
+from bella.feedback_collector import FeedbackCollector
+from bella.gemini_answerer import GeminiSupportAnswerer
+from bella.gemini_gate import GeminiScopeGate
 from bella.pipeline import Pipeline
-from bella.seat_count import SeatCountHolder, SeatCountRefresher
+from bella.triage_worker import GitHubIssuePublisher, TriageWorker
 
 
 @dataclass(frozen=True)
 class Runtime:
     pipeline: Pipeline
-    seat_count_refresher: SeatCountRefresher
+    triage_worker: TriageWorker
 
 
 def build_runtime(settings: Settings) -> Runtime:
-    """Read the content files and wire up every real collaborator, once."""
-    holder = SeatCountHolder(
-        max_age=timedelta(seconds=settings.seat_count_max_age_seconds)
+    enrollment_url = ""
+    human_contact_reply = ""
+    if (
+        settings.enrollment_card_path.is_file()
+        and settings.knowledge_base_path.is_file()
+    ):
+        content = CourseContent.from_files(
+            settings.knowledge_base_path,
+            settings.enrollment_card_path,
+        )
+        enrollment_url = content.enrollment_url
+        human_contact_reply = content.human_contact_reply
+
+    client = genai.Client(api_key=settings.gemini_api_key)
+    scope_gate = GeminiScopeGate(client, model=settings.gemini_router_model)
+
+    app_registry = AppRegistry.load_from_directory(settings.apps_dir)
+    default_app = app_registry.default_app()
+
+    support_answerer = GeminiSupportAnswerer(
+        client,
+        app_config=default_app,
+        model=settings.gemini_agent_model,
     )
-    content = CourseContent.from_files(
-        settings.knowledge_base_path,
-        settings.enrollment_card_path,
-        seat_count_holder=holder,
+
+    conversation_store = PostgresConversationStore(
+        settings.database_url,
+        required_database_name="bella",
     )
-    # One client, one connection pool: the gate and the answerer both call
-    # Anthropic back-to-back on every message. Their timeouts differ, which is
-    # a per-request concern (see each module's TIMEOUT), not a per-client one.
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key, max_retries=1)
+
+    feedback_collector = FeedbackCollector(
+        client=client,
+        app_id=default_app.app_id,
+        app_name=default_app.name,
+        model=settings.gemini_agent_model,
+        inbox_path=settings.inbox_path,
+    )
+
+    publisher = GitHubIssuePublisher(token=settings.github_token)
+    triage_worker = TriageWorker(
+        store=conversation_store,
+        publisher=publisher,
+        app_registry=app_registry,
+    )
+
+    canned = CannedReplies.from_yaml(settings.canned_replies_path)
+
     pipeline = Pipeline(
         EvolutionSender(
             base_url=settings.evolution_url,
             api_key=settings.evolution_api_key,
             instance_id=settings.evolution_instance_id,
         ),
-        AnthropicScopeGate(client),
-        AnthropicAnswerer(client, content),
-        CannedReplies.from_yaml(settings.canned_replies_path),
-        content.enrollment_url,
-        PostgresConversationStore(
-            settings.database_url,
-            required_database_name="bella",
-        ),
+        scope_gate,
+        support_answerer,
+        canned,
+        enrollment_url,
+        conversation_store,
         settings.apostila_path,
-        content.human_contact_reply,
+        human_contact_reply,
         settings.admin_contact,
         settings.rate_limit_policy,
         takeover_pause_seconds=settings.takeover_pause_seconds,
+        feedback_collector=feedback_collector,
+        support_answerer=support_answerer,
+        triage_worker=triage_worker,
     )
-    source = SenaiAvailabilitySource(
-        content.senai_course_listing_url,
-        class_start=content.class_start,
-    )
-    refresher = SeatCountRefresher(
-        source,
-        holder,
-        interval_seconds=settings.seat_count_refresh_seconds,
-    )
-    return Runtime(pipeline, refresher)
+    return Runtime(pipeline=pipeline, triage_worker=triage_worker)

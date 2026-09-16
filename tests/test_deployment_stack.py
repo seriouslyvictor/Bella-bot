@@ -152,12 +152,15 @@ def test_remaining_feature_configuration_is_exposed_to_bella() -> None:
     assert environment["TAKEOVER_PAUSE_SECONDS"] == (
         "${TAKEOVER_PAUSE_SECONDS:-3600}"
     )
-    assert environment["SEAT_COUNT_REFRESH_SECONDS"] == (
-        "${SEAT_COUNT_REFRESH_SECONDS:-21600}"
+    assert environment["GEMINI_API_KEY"].startswith("${GEMINI_API_KEY:")
+    assert environment["GEMINI_ROUTER_MODEL"] == (
+        "${GEMINI_ROUTER_MODEL:-gemini-3.8-flash}"
     )
-    assert environment["SEAT_COUNT_MAX_AGE_SECONDS"] == (
-        "${SEAT_COUNT_MAX_AGE_SECONDS:-86400}"
+    assert environment["GEMINI_AGENT_MODEL"] == (
+        "${GEMINI_AGENT_MODEL:-gemini-3.8-flash}"
     )
+    assert environment["GITHUB_TOKEN"] == "${GITHUB_TOKEN:-}"
+    assert environment["BELLA_DISPLAY_NAME"] == "${BELLA_DISPLAY_NAME:-Nova}"
 
 
 def test_local_overlay_only_publishes_loopback_ports() -> None:

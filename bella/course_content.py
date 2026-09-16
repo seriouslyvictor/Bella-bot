@@ -1,13 +1,11 @@
 """Load the public-safe Knowledge Base and volatile Enrollment Card."""
 
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from bella.seat_count import DEFAULT_MAX_AGE_SECONDS, SeatCountHolder
 from bella.yaml_content import parse_yaml_mapping, require_text
 
 WHAT = "Enrollment Card"
@@ -21,15 +19,12 @@ class CourseContent:
     senai_course_listing_url: str
     class_start: str
     human_contact_reply: str
-    seat_count_holder: SeatCountHolder
 
     @classmethod
     def from_files(
         cls,
         knowledge_base_path: Path,
         enrollment_card_path: Path,
-        *,
-        seat_count_holder: SeatCountHolder | None = None,
     ) -> "CourseContent":
         enrollment_card = enrollment_card_path.read_text(encoding="utf-8")
         parsed = parse_yaml_mapping(enrollment_card, WHAT)
@@ -61,17 +56,11 @@ class CourseContent:
             senai_course_listing_url=listing_url,
             class_start=class_start,
             human_contact_reply="\n".join(contact_lines),
-            seat_count_holder=seat_count_holder
-            or SeatCountHolder(max_age=timedelta(seconds=DEFAULT_MAX_AGE_SECONDS)),
         )
 
     def render_enrollment_card(self) -> str:
-        fields = dict(self.enrollment_card_fields)
-        count = self.seat_count_holder.current_count()
-        if count is not None:
-            fields["seats"] = f"{count} vaga" if count == 1 else f"{count} vagas"
         return yaml.safe_dump(
-            fields,
+            self.enrollment_card_fields,
             allow_unicode=True,
             sort_keys=False,
         )

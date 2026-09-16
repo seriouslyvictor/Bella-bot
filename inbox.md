@@ -47,6 +47,28 @@ Logs, screenshots, message IDs, reproduction steps, or other useful context.
 
 <!-- Add new issues directly below this comment. -->
 
+### Erro HTTP 500 e tela branca ao exportar relatório de faturamento para PDF
+
+- Reported at: 2026-09-15T23:38:03.902531-03:00
+- Status: needs-triage
+- Verified at: not verified
+- Verified by: not verified
+- Tracking issue: not created
+- Reporter: +5511999998888
+- App: report_generator9000
+
+**Observed:**
+
+Ao tentar exportar o relatório de faturamento mensal para PDF no Google Chrome, a página trava com uma tela branca e o console exibe erro HTTP 500.
+
+**Expected:**
+
+O arquivo PDF deveria ser baixado normalmente sem travamento da página.
+
+**Evidence:**
+
+Navegador Google Chrome, tela branca e erro HTTP 500 registrado no console do navegador ao exportar relatório de faturamento mensal.
+
 ### Keep the course opening count up to date
 
 - Reported at: 2026-07-16T22:38:33-03:00

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Bella — WhatsApp course concierge for the SENAI Generative AI course"
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.104",
+    "google-genai>=1.0.0",
     "fastapi>=0.115",
     "httpx>=0.27",
     "pydantic>=2.0",
@@ -33,6 +33,7 @@ include = ["bella*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest_tmp"
 
 [tool.mypy]
 python_version = "3.12"

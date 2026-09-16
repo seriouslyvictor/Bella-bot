@@ -11,7 +11,6 @@ from fastapi.responses import FileResponse
 from bella.config import Settings
 from bella.evolution import parse_webhook
 from bella.pipeline import Pipeline
-from bella.seat_count import SeatCountRefresher
 
 logger = logging.getLogger("bella")
 
@@ -19,8 +18,6 @@ logger = logging.getLogger("bella")
 def create_app(
     settings: Settings,
     pipeline: Pipeline,
-    *,
-    seat_count_refresher: SeatCountRefresher | None = None,
 ) -> FastAPI:
     """Wire the HTTP surface onto an already-built pipeline.
 
@@ -30,8 +27,6 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await pipeline.start()
         tasks = [asyncio.create_task(pipeline.run_retention())]
-        if seat_count_refresher is not None:
-            tasks.append(asyncio.create_task(seat_count_refresher.run()))
         try:
             yield
         finally:
@@ -40,8 +35,6 @@ def create_app(
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
-            if seat_count_refresher is not None:
-                await seat_count_refresher.close()
             await pipeline.close()
 
     app = FastAPI(
@@ -129,7 +122,6 @@ def main() -> None:
     app = create_app(
         settings,
         runtime.pipeline,
-        seat_count_refresher=runtime.seat_count_refresher,
     )
     uvicorn.run(app, host="0.0.0.0", port=8000)
 

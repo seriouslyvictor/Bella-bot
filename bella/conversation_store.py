@@ -8,6 +8,7 @@ from typing import Literal, Protocol, cast
 from psycopg_pool import AsyncConnectionPool
 
 from bella.database import require_database_name
+from bella.feedback_collector import FeedbackDraft, FeedbackPhase
 
 HISTORY_LIMIT = 50
 
@@ -19,6 +20,21 @@ class ConversationMessage:
     role: MessageRole
     text: str
     timestamp: datetime
+
+
+@dataclass(frozen=True)
+class StagedFeedback:
+    id: int
+    phone_number: str
+    app_id: str
+    title: str
+    observed: str
+    expected: str
+    evidence: str
+    created_at: datetime
+    status: str = "staged"
+    github_issue_url: str | None = None
+    error_message: str | None = None
 
 
 class ConversationStore(Protocol):
@@ -53,6 +69,35 @@ class ConversationStore(Protocol):
 
     async def clear_pause(self, phone_number: str) -> None: ...
 
+    async def get_feedback_draft(
+        self, phone_number: str
+    ) -> tuple[FeedbackPhase, FeedbackDraft | None]: ...
+
+    async def set_feedback_draft(
+        self,
+        phone_number: str,
+        phase: FeedbackPhase,
+        draft: FeedbackDraft | None,
+    ) -> None: ...
+
+    async def clear_feedback_draft(self, phone_number: str) -> None: ...
+
+    async def stage_feedback(
+        self, phone_number: str, draft: FeedbackDraft
+    ) -> int: ...
+
+    async def get_unprocessed_feedback(
+        self, limit: int = 10
+    ) -> list[StagedFeedback]: ...
+
+    async def mark_feedback_published(
+        self, staged_id: int, github_issue_url: str
+    ) -> None: ...
+
+    async def mark_feedback_failed(
+        self, staged_id: int, error_message: str
+    ) -> None: ...
+
 
 class InMemoryConversationStore:
     """Process-local store implementing the production persistence contract."""
@@ -61,6 +106,9 @@ class InMemoryConversationStore:
         self._messages: dict[str, list[ConversationMessage]] = defaultdict(list)
         self._delivery_ids: dict[str, datetime] = {}
         self._paused_until: dict[str, datetime] = {}
+        self._feedback_drafts: dict[str, tuple[FeedbackPhase, FeedbackDraft | None]] = {}
+        self._staged_feedback: dict[int, StagedFeedback] = {}
+        self._next_staged_id: int = 1
 
     async def start(self) -> None:
         pass
@@ -96,6 +144,7 @@ class InMemoryConversationStore:
         for phone_number in idle_numbers:
             del self._messages[phone_number]
             self._paused_until.pop(phone_number, None)
+            self._feedback_drafts.pop(phone_number, None)
         return len(idle_numbers)
 
     async def delete_deliveries_before(self, cutoff: datetime) -> int:
@@ -116,6 +165,88 @@ class InMemoryConversationStore:
 
     async def clear_pause(self, phone_number: str) -> None:
         self._paused_until.pop(phone_number, None)
+
+    async def get_feedback_draft(
+        self, phone_number: str
+    ) -> tuple[FeedbackPhase, FeedbackDraft | None]:
+        return self._feedback_drafts.get(phone_number, (FeedbackPhase.IDLE, None))
+
+    async def set_feedback_draft(
+        self,
+        phone_number: str,
+        phase: FeedbackPhase,
+        draft: FeedbackDraft | None,
+    ) -> None:
+        self._feedback_drafts[phone_number] = (phase, draft)
+
+    async def clear_feedback_draft(self, phone_number: str) -> None:
+        self._feedback_drafts.pop(phone_number, None)
+
+    async def stage_feedback(
+        self, phone_number: str, draft: FeedbackDraft
+    ) -> int:
+        staged_id = self._next_staged_id
+        self._next_staged_id += 1
+        item = StagedFeedback(
+            id=staged_id,
+            phone_number=phone_number,
+            app_id=draft.app_id,
+            title=draft.title,
+            observed=draft.observed,
+            expected=draft.expected,
+            evidence=draft.evidence,
+            created_at=datetime.now(UTC),
+            status="staged",
+        )
+        self._staged_feedback[staged_id] = item
+        return staged_id
+
+    async def get_unprocessed_feedback(
+        self, limit: int = 10
+    ) -> list[StagedFeedback]:
+        unprocessed = [
+            item for item in self._staged_feedback.values() if item.status == "staged"
+        ]
+        unprocessed.sort(key=lambda item: item.id)
+        return unprocessed[:limit]
+
+    async def mark_feedback_published(
+        self, staged_id: int, github_issue_url: str
+    ) -> None:
+        if staged_id in self._staged_feedback:
+            prev = self._staged_feedback[staged_id]
+            self._staged_feedback[staged_id] = StagedFeedback(
+                id=prev.id,
+                phone_number=prev.phone_number,
+                app_id=prev.app_id,
+                title=prev.title,
+                observed=prev.observed,
+                expected=prev.expected,
+                evidence=prev.evidence,
+                created_at=prev.created_at,
+                status="published",
+                github_issue_url=github_issue_url,
+                error_message=None,
+            )
+
+    async def mark_feedback_failed(
+        self, staged_id: int, error_message: str
+    ) -> None:
+        if staged_id in self._staged_feedback:
+            prev = self._staged_feedback[staged_id]
+            self._staged_feedback[staged_id] = StagedFeedback(
+                id=prev.id,
+                phone_number=prev.phone_number,
+                app_id=prev.app_id,
+                title=prev.title,
+                observed=prev.observed,
+                expected=prev.expected,
+                evidence=prev.evidence,
+                created_at=prev.created_at,
+                status="failed",
+                github_issue_url=prev.github_issue_url,
+                error_message=error_message,
+            )
 
 
 _SCHEMA_STATEMENTS = (
@@ -166,6 +297,34 @@ _SCHEMA_STATEMENTS = (
     CREATE TABLE IF NOT EXISTS webhook_deliveries (
         message_id TEXT PRIMARY KEY,
         received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS active_feedback_drafts (
+        phone_number TEXT PRIMARY KEY,
+        phase TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        observed TEXT NOT NULL,
+        expected TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS feedback_staging (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        phone_number TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        observed TEXT NOT NULL,
+        expected TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'staged' CHECK (status IN ('staged', 'published', 'failed')),
+        github_issue_url TEXT,
+        error_message TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
 )
@@ -323,3 +482,159 @@ class PostgresConversationStore:
                 "UPDATE conversations SET paused_until = NULL WHERE phone_number = %s",
                 (phone_number,),
             )
+
+    async def get_feedback_draft(
+        self, phone_number: str
+    ) -> tuple[FeedbackPhase, FeedbackDraft | None]:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT phase, app_id, title, observed, expected, evidence
+                FROM active_feedback_drafts
+                WHERE phone_number = %s
+                """,
+                (phone_number,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            return (FeedbackPhase.IDLE, None)
+        phase_str, app_id, title, observed, expected, evidence = row
+        phase = FeedbackPhase(phase_str)
+        draft = (
+            FeedbackDraft(
+                app_id=app_id,
+                title=title,
+                observed=observed,
+                expected=expected,
+                evidence=evidence,
+                is_complete=True,
+            )
+            if (title or observed or expected)
+            else None
+        )
+        return (phase, draft)
+
+    async def set_feedback_draft(
+        self,
+        phone_number: str,
+        phase: FeedbackPhase,
+        draft: FeedbackDraft | None,
+    ) -> None:
+        app_id = draft.app_id if draft else ""
+        title = draft.title if draft else ""
+        observed = draft.observed if draft else ""
+        expected = draft.expected if draft else ""
+        evidence = draft.evidence if draft else ""
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                """
+                INSERT INTO active_feedback_drafts
+                    (phone_number, phase, app_id, title, observed, expected, evidence, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (phone_number) DO UPDATE
+                SET phase = EXCLUDED.phase,
+                    app_id = EXCLUDED.app_id,
+                    title = EXCLUDED.title,
+                    observed = EXCLUDED.observed,
+                    expected = EXCLUDED.expected,
+                    evidence = EXCLUDED.evidence,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (phone_number, phase.value, app_id, title, observed, expected, evidence),
+            )
+
+    async def clear_feedback_draft(self, phone_number: str) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                "DELETE FROM active_feedback_drafts WHERE phone_number = %s",
+                (phone_number,),
+            )
+
+    async def stage_feedback(
+        self, phone_number: str, draft: FeedbackDraft
+    ) -> int:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                INSERT INTO feedback_staging
+                    (phone_number, app_id, title, observed, expected, evidence)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    phone_number,
+                    draft.app_id,
+                    draft.title,
+                    draft.observed,
+                    draft.expected,
+                    draft.evidence,
+                ),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("Failed to retrieve generated id for staged feedback")
+            return int(row[0])
+
+    async def get_unprocessed_feedback(
+        self, limit: int = 10
+    ) -> list[StagedFeedback]:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id, phone_number, app_id, title, observed, expected, evidence, created_at, status, github_issue_url, error_message
+                FROM feedback_staging
+                WHERE status = 'staged'
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [
+                StagedFeedback(
+                    id=int(row[0]),
+                    phone_number=str(row[1]),
+                    app_id=str(row[2]),
+                    title=str(row[3]),
+                    observed=str(row[4]),
+                    expected=str(row[5]),
+                    evidence=str(row[6]),
+                    created_at=cast(datetime, row[7]),
+                    status=str(row[8]),
+                    github_issue_url=cast(str | None, row[9]),
+                    error_message=cast(str | None, row[10]),
+                )
+                for row in rows
+            ]
+
+    async def mark_feedback_published(
+        self, staged_id: int, github_issue_url: str
+    ) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                """
+                UPDATE feedback_staging
+                SET status = 'published',
+                    github_issue_url = %s,
+                    error_message = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (github_issue_url, staged_id),
+            )
+
+    async def mark_feedback_failed(
+        self, staged_id: int, error_message: str
+    ) -> None:
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                """
+                UPDATE feedback_staging
+                SET status = 'failed',
+                    error_message = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (error_message, staged_id),
+            )
+
